@@ -247,3 +247,43 @@ test('inner timeline and tweet text expand with content width, then restore when
         assert.ok(await width('#native-timeline-wrapper') <= 310);
     } finally { await context.close(); }
 });
+
+
+test('expanded navigation controls fit their banner across zoom-equivalent CSS viewports', async () => {
+    const { page, context } = await setup('{}', { width: 1440, height: 1000 });
+    try {
+        await page.evaluate(() => {
+            const header = document.querySelector('header');
+            header.setAttribute('role', 'banner');
+            header.innerHTML = '<div><div style="position:fixed"><div class="nav-inner"><nav><a href="/notifications"><div><span>Notifications</span></div></a><a href="/follower_requests"><div><span>Follower requests</span></div></a></nav><a href="/compose/post">Post</a><button data-testid="SideNav_AccountSwitcher_Button">Account menu</button></div></div></div>';
+            const native = document.createElement('style');
+            native.textContent = `header[role=banner]{display:flex;flex-direction:column;flex-grow:1}
+                header[role=banner]>div{margin-left:60px}
+                .nav-inner{width:320px;padding:0 12px;display:flex;flex-direction:column}
+                header nav{width:296px}header nav a{display:flex;width:296px;padding:12px}
+                header nav a>div{display:flex;min-width:280px}header span{white-space:nowrap}
+                header a[href="/compose/post"],header button{display:block;width:296px;padding:12px}
+                @media(max-width:1264px){.nav-inner{width:88px}header nav,header nav a,header button{width:72px}header span{display:none}}
+            `;
+            document.head.append(native);
+        });
+        // Browser zoom changes CSS viewport width (not CSS zoom or deviceScaleFactor).
+        for (const zoom of [0.8, 1, 1.1, 1.25, 1600 / 1265, 1600 / 1264, 1.5, 1.6]) {
+            await page.setViewportSize({ width: Math.round(1600 / zoom), height: 1000 });
+            const banner = await page.locator('header[role=banner]').boundingBox();
+            const main = await page.locator('main[role=main]').boundingBox();
+            assert.ok(Math.abs(banner.x + banner.width - main.x) <= 1);
+            const controls = page.locator('header[role=banner] nav a, header[role=banner] a[href="/compose/post"], header[role=banner] button');
+            for (const control of await controls.all()) {
+                const box = await control.boundingBox();
+                assert.ok(box.x >= banner.x && box.x + box.width <= banner.x + banner.width + 1, `zoom ${zoom}: control crosses banner`);
+            }
+            for (const label of await page.locator('header[role=banner] span').all()) {
+                if (await label.isVisible()) {
+                    const box = await label.boundingBox();
+                    assert.ok(box.x + box.width <= main.x + 1, `zoom ${zoom}: label overlaps content`);
+                }
+            }
+        }
+    } finally { await context.close(); }
+});

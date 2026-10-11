@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Custom UI
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.3
+// @version      1.0.5
 // @description  X / Twitter 自定义界面：宽度、字体、精简界面和可持久保存的用户配置面板
 // @author       hmxxgit
 // @license      MIT
@@ -112,7 +112,23 @@
                     header[role="banner"] > div > div {
                         width: var(--tm-x-nav-width) !important;
                         max-width: var(--tm-x-nav-width) !important;
+                        margin-inline: 0 !important;
                     }
+                    /* X 的展开导航有自己的固定宽度和 padding；统一边框盒并约束内部控件。 */
+                    header[role="banner"],
+                    header[role="banner"] div,
+                    header[role="banner"] nav,
+                    header[role="banner"] a,
+                    header[role="banner"] button {
+                        box-sizing: border-box !important;
+                        min-width: 0 !important;
+                        max-width: 100% !important;
+                    }
+                    /* 外层占位和 fixed 层必须使用同一个宽度，不能被百分比规则缩小。 */
+                    header[role="banner"] > div,
+                    header[role="banner"] > div > div {max-width: var(--tm-x-nav-width) !important;}
+                    header[role="banner"] nav {width: 100% !important;}
+                    header[role="banner"] a[href="/compose/post"] {width: 100% !important;}
                     main[role="main"] {flex: 1 1 0% !important; min-width: 0 !important; align-items: flex-start !important;}
                     header[role="banner"] + main[role="main"] {margin-left: 0 !important;}
                     main[role="main"] > div {width: 100% !important; max-width: ${config.contentWidth + (config.hideRightSidebar ? 0 : 390)}px !important;}
