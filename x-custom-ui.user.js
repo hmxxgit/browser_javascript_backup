@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Custom UI
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.5
+// @version      1.0.6
 // @description  X / Twitter 自定义界面：宽度、字体、精简界面和可持久保存的用户配置面板
 // @author       hmxxgit
 // @license      MIT
@@ -146,6 +146,20 @@
                     header[role="banner"] {--tm-x-nav-width: 275px;}
                 }
                 [data-testid="tweetText"] {font-size: ${config.textFontSize}px !important; line-height: ${config.textLineHeight} !important;}
+                /* 六个操作使用相同份额；X 原生仅让前四项伸展，收藏和分享会挤在一起。 */
+                [data-testid="primaryColumn"] [data-testid="tweet"] [role="group"]:has([data-testid="reply"]) {
+                    display: flex !important;
+                    width: 100% !important;
+                    max-width: none !important;
+                    justify-content: space-between !important;
+                }
+                [data-testid="primaryColumn"] [data-testid="tweet"] [role="group"]:has([data-testid="reply"]) > div {
+                    display: flex !important;
+                    flex: 1 1 0% !important;
+                    min-width: 0 !important;
+                    justify-content: flex-start !important;
+                    align-items: center !important;
+                }
             `);
             if (config.textColor) rules.push(`[data-testid="tweetText"] {color: ${config.textColor} !important;}`);
             if (config.linkColor) rules.push(`[data-testid="tweetText"] a {color: ${config.linkColor} !important;}`);
@@ -174,7 +188,7 @@
             if (config.hideExplore) hidden.push('nav a[data-testid="AppTabBar_Explore_Link"]');
             if (config.hideCommunities) hidden.push('nav a[href$="/communities"]');
             if (config.hideJobs) hidden.push('nav a[href="/jobs"]');
-            if (config.hideViewCounts) hidden.push('[data-testid="tweet"] a[href$="/analytics"]');
+            if (config.hideViewCounts) hidden.push('[data-testid="tweet"] a[href$="/analytics"]', '[data-testid="tweet"] [role="group"]:has([data-testid="reply"]) > div:has(> a[href$="/analytics"])');
             if (hidden.length) rules.push(`${hidden.join(',\n')} {display: none !important;}`);
             if (config.actionsHoverReveal) rules.push(`
                 @media (hover: hover) and (pointer: fine) {

@@ -287,3 +287,36 @@ test('expanded navigation controls fit their banner across zoom-equivalent CSS v
         }
     } finally { await context.close(); }
 });
+
+test('tweet action icons remain evenly spaced with wide content and hidden view counts', async () => {
+    const { page, context } = await setup(JSON.stringify({ contentWidth: 1200 }));
+    try {
+        await page.evaluate(() => {
+            const group = document.querySelector('[data-testid=tweet] [role=group]');
+            group.id = 'actions';
+            group.style.cssText = 'display:flex;max-width:600px;justify-content:space-between';
+            group.innerHTML = ['reply', 'retweet', 'like', 'views', 'bookmark', 'share'].map((id, i) =>
+                `<div style="flex:${i < 4 ? '1 1 0%' : '0 0 auto'};display:${i === 5 ? 'inline-grid' : 'flex'}">${id === 'views' ? '<a href="/me/status/1/analytics">Views</a>' : `<button data-testid="${id}" style="width:30px;padding:0">${id}</button>`}</div>`).join('');
+        });
+        const check = async count => {
+            const positions = await page.locator('#actions > div').evaluateAll(nodes => nodes.filter(n => getComputedStyle(n).display !== 'none').map(n => n.getBoundingClientRect().x));
+            assert.equal(positions.length, count);
+            const gaps = positions.slice(1).map((x, i) => x - positions[i]);
+            assert.ok(Math.max(...gaps) - Math.min(...gaps) < 1, 'all action slots have equal spacing');
+            assert.ok(await css(page, '#actions', 'maxWidth') === 'none');
+        };
+        for (const width of [1440, 1100, 800, 390]) {
+            await page.setViewportSize({ width, height: 1000 });
+            await check(6);
+        }
+        await open(page);
+        await input(page, 'hideViewCounts').check();
+        await save(page);
+        await check(5);
+        await open(page);
+        await input(page, 'enabled').uncheck();
+        await save(page);
+        assert.equal(await css(page, '#actions', 'maxWidth'), '600px');
+        assert.equal(await css(page, '#actions > div:nth-child(5)', 'flexGrow'), '0');
+    } finally { await context.close(); }
+});
