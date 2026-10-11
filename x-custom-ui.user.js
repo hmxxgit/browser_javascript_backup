@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Custom UI
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.6
+// @version      1.0.7
 // @description  X / Twitter 自定义界面：宽度、字体、精简界面和可持久保存的用户配置面板
 // @author       hmxxgit
 // @license      MIT
@@ -159,6 +159,12 @@
                     min-width: 0 !important;
                     justify-content: flex-start !important;
                     align-items: center !important;
+                }
+                /* 分享另有嵌套网格，避免图标在等宽槽位内部再次居中。 */
+                [data-testid="primaryColumn"] [data-testid="tweet"] [role="group"]:has([data-testid="reply"]) > div > div {
+                    width: max-content !important;
+                    max-width: 100% !important;
+                    flex: 0 0 auto !important;
                 }
             `);
             if (config.textColor) rules.push(`[data-testid="tweetText"] {color: ${config.textColor} !important;}`);
