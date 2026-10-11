@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Custom UI
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.2
+// @version      1.0.3
 // @description  X / Twitter 自定义界面：宽度、字体、精简界面和可持久保存的用户配置面板
 // @author       hmxxgit
 // @license      MIT
@@ -117,6 +117,14 @@
                     header[role="banner"] + main[role="main"] {margin-left: 0 !important;}
                     main[role="main"] > div {width: 100% !important; max-width: ${config.contentWidth + (config.hideRightSidebar ? 0 : 390)}px !important;}
                     [data-testid="primaryColumn"] {width: min(${config.contentWidth}px, 100%) !important; max-width: ${config.contentWidth}px !important; flex: 1 1 auto !important; min-width: 0 !important;}
+                    /* 时间线 section 的父容器另外限制为 600px，主栏变宽不会自动解除。 */
+                    [data-testid="primaryColumn"] div:has(> section) {
+                        width: 100% !important;
+                        max-width: none !important;
+                        margin-inline: 0 !important;
+                        align-self: stretch !important;
+                        box-sizing: border-box !important;
+                    }
                 }
                 @media (min-width: 1265px) {
                     header[role="banner"] {--tm-x-nav-width: 275px;}

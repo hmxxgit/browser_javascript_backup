@@ -210,3 +210,40 @@ test('X growing banner leaves no large left gutter at desktop widths', async () 
         } finally { await context.close(); }
     }
 });
+
+
+test('inner timeline and tweet text expand with content width, then restore when disabled', async () => {
+    const { page, context } = await setup(JSON.stringify({ contentWidth: 1200 }), { width: 1920, height: 1000 });
+    try {
+        await page.evaluate(() => {
+            const column = document.querySelector('[data-testid=primaryColumn]');
+            const wrapper = document.createElement('div');
+            wrapper.id = 'native-timeline-wrapper';
+            wrapper.style.cssText = 'max-width:600px; width:100%; margin-inline:auto; align-self:center';
+            const section = document.createElement('section');
+            section.append(column.querySelector('article'));
+            wrapper.append(section);
+            column.append(wrapper);
+        });
+        const width = async selector => (await page.locator(selector).boundingBox()).width;
+        assert.ok(await width('#native-timeline-wrapper') > 1190);
+        assert.ok(await width('[data-testid=tweetText]') > 1100);
+        const wrapperBox = await page.locator('#native-timeline-wrapper').boundingBox();
+        const columnBox = await page.locator('[data-testid=primaryColumn]').boundingBox();
+        assert.ok(Math.abs(wrapperBox.x - columnBox.x) <= 1);
+        await open(page);
+        await input(page, 'contentWidth').fill('900');
+        await save(page);
+        assert.ok(await width('#native-timeline-wrapper') > 890);
+        assert.ok(await width('[data-testid=tweetText]') > 800);
+        await input(page, 'enabled').uncheck();
+        await save(page);
+        assert.ok(await width('#native-timeline-wrapper') <= 600);
+        await ui(page).locator('#close').click();
+        await page.setViewportSize({ width: 390, height: 844 });
+        await open(page);
+        await input(page, 'enabled').check();
+        await save(page);
+        assert.ok(await width('#native-timeline-wrapper') <= 310);
+    } finally { await context.close(); }
+});
