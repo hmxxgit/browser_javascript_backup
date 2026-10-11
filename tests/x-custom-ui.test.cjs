@@ -171,3 +171,42 @@ test('corrupt JSON falls back to defaults without runtime errors', async () => {
         assert.deepEqual(errors, []);
     } finally { await context.close(); }
 });
+
+// Regression: X allocates free space to the banner, right-aligning its fixed navigation.
+// The original fixture's fixed 80px header failed to reproduce that layout.
+test('X growing banner leaves no large left gutter at desktop widths', async () => {
+    for (const width of [1100, 1440, 1920, 2560]) {
+        const { page, context } = await setup('{}', { width, height: 1000 });
+        try {
+            await page.evaluate(() => {
+                const header = document.querySelector('header');
+                header.setAttribute('role', 'banner');
+                const nav = header.querySelector('nav');
+                const spacer = document.createElement('div');
+                const fixed = document.createElement('div');
+                fixed.style.cssText = 'position:fixed;width:275px';
+                fixed.append(nav);
+                spacer.append(fixed);
+                header.append(spacer);
+                const native = document.createElement('style');
+                native.textContent = 'header[role=banner]{flex-grow:1;align-items:flex-end;display:flex;flex-direction:column}main[role=main]{flex-grow:1;align-items:flex-start}';
+                document.head.append(native);
+            });
+            const header = await page.locator('header[role=banner]').boundingBox();
+            const column = await page.locator('[data-testid=primaryColumn]').boundingBox();
+            const expectedNav = width >= 1265 ? 275 : 88;
+            assert.equal(header.width, expectedNav);
+            assert.ok(Math.abs(column.x - expectedNav) <= 1, `viewport ${width}: content starts at ${column.x}`);
+            const fixed = await page.locator('header[role=banner] > div > div').boundingBox();
+            assert.equal(fixed.width, expectedNav);
+            assert.ok(column.x + column.width <= width + 1);
+            await open(page);
+            await input(page, 'hideRightSidebar').uncheck();
+            await save(page);
+            assert.ok(Math.abs((await page.locator('[data-testid=primaryColumn]').boundingBox()).x - expectedNav) <= 1);
+            await input(page, 'enabled').uncheck();
+            await save(page);
+            assert.equal(await page.locator('#tm-x-custom-ui-style').textContent(), '');
+        } finally { await context.close(); }
+    }
+});

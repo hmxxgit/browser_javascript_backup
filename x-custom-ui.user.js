@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Custom UI
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.1
+// @version      1.0.2
 // @description  X / Twitter 自定义界面：宽度、字体、精简界面和可持久保存的用户配置面板
 // @author       hmxxgit
 // @license      MIT
@@ -100,9 +100,26 @@
         if (config.enabled) {
             rules.push(`
                 @media (min-width: 1000px) {
-                    main[role="main"] {flex-grow: 1 !important; min-width: 0 !important;}
+                    /* X 的 banner 原本会 flex-grow 填满左侧，必须连同固定导航容器一起约束。 */
+                    header[role="banner"] {
+                        --tm-x-nav-width: 88px;
+                        flex: 0 0 var(--tm-x-nav-width) !important;
+                        width: var(--tm-x-nav-width) !important;
+                        min-width: 0 !important;
+                        align-items: flex-start !important;
+                    }
+                    header[role="banner"] > div,
+                    header[role="banner"] > div > div {
+                        width: var(--tm-x-nav-width) !important;
+                        max-width: var(--tm-x-nav-width) !important;
+                    }
+                    main[role="main"] {flex: 1 1 0% !important; min-width: 0 !important; align-items: flex-start !important;}
+                    header[role="banner"] + main[role="main"] {margin-left: 0 !important;}
                     main[role="main"] > div {width: 100% !important; max-width: ${config.contentWidth + (config.hideRightSidebar ? 0 : 390)}px !important;}
                     [data-testid="primaryColumn"] {width: min(${config.contentWidth}px, 100%) !important; max-width: ${config.contentWidth}px !important; flex: 1 1 auto !important; min-width: 0 !important;}
+                }
+                @media (min-width: 1265px) {
+                    header[role="banner"] {--tm-x-nav-width: 275px;}
                 }
                 [data-testid="tweetText"] {font-size: ${config.textFontSize}px !important; line-height: ${config.textLineHeight} !important;}
             `);
