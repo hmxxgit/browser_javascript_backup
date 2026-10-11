@@ -296,7 +296,7 @@ test('tweet action icons remain evenly spaced with wide content and hidden view 
             group.id = 'actions';
             group.style.cssText = 'display:flex;max-width:600px;justify-content:space-between';
             group.innerHTML = ['reply', 'retweet', 'like', 'views', 'bookmark', 'share'].map((id, i) =>
-                `<div style="flex:${i < 4 ? '1 1 0%' : '0 0 auto'};display:${i === 5 ? 'inline-grid' : 'flex'}">${id === 'share' ? '<div style="width:100%;display:flex;justify-content:center"><button data-testid="share" style="width:30px;padding:0">share</button></div>' : id === 'views' ? '<a href="/me/status/1/analytics">Views</a>' : `<button data-testid="${id}" style="width:30px;padding:0">${id}</button>`}</div>`).join('');
+                `<div style="flex:${i < 4 ? '1 1 0%' : '0 0 auto'};display:${i === 5 ? 'inline-grid' : 'flex'};flex-direction:${i === 5 ? 'column' : 'row'};margin-right:${i === 4 ? '10px' : '0'}">${id === 'share' ? '<div style="width:100%;display:flex;justify-content:center"><button data-testid="share" style="width:30px;padding:0">share</button></div>' : id === 'views' ? '<a href="/me/status/1/analytics">Views</a>' : `<button data-testid="${id}" style="width:30px;padding:0">${id}</button>`}</div>`).join('');
         });
         const check = async count => {
             const positions = await page.locator('#actions > div').evaluateAll(nodes => nodes.filter(n => getComputedStyle(n).display !== 'none').map(n => n.querySelector('button,a').getBoundingClientRect().x));

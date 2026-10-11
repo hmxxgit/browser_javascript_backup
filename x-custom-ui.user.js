@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Custom UI
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.7
+// @version      1.0.8
 // @description  X / Twitter 自定义界面：宽度、字体、精简界面和可持久保存的用户配置面板
 // @author       hmxxgit
 // @license      MIT
@@ -156,6 +156,8 @@
                 [data-testid="primaryColumn"] [data-testid="tweet"] [role="group"]:has([data-testid="reply"]) > div {
                     display: flex !important;
                     flex: 1 1 0% !important;
+                    flex-direction: row !important;
+                    margin-inline: 0 !important;
                     min-width: 0 !important;
                     justify-content: flex-start !important;
                     align-items: center !important;
