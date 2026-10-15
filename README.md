@@ -25,6 +25,8 @@
 - **修改配置：** 在 ChatGPT 页面点击 Tampermonkey 图标 → “自定义配置” → 修改设置 → “保存并刷新”。颜色需要勾选“启用”。
 - **获取更新：** 在 Tampermonkey 管理面板检查脚本更新，新版从本仓库获取。
 
+ChatGPT 代码块保留原始缩进和换行，取消浏览器自动折行；过长的代码行可横向滚动。若 `for` 等语句在回答源码中本来就写成多行，加宽页面仍会保留这些换行，脚本不会自动拼接或修改复制内容。
+
 ## X Custom UI
 
 在 X 页面点击 **Tampermonkey → 自定义配置**，或者右下角 **X UI ⚙**，调整后点击 **保存并应用**，无需刷新。默认正文 19px、行高 1.6、桌面内容宽度 900px，隐藏右栏、Grok 和 Premium，保留 X 原有配色。
@@ -48,6 +50,7 @@
 ```sh
 npm ci
 npm test
+node --check chatgpt-custom-ui.user.js
 node --check x-custom-ui.user.js
 ```
 
