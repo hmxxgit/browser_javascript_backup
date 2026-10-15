@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.50
+// @version      1.4.51
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -942,21 +942,28 @@
             height: auto !important;
         }
     `;
-    // 只取消代码块的视觉折行；源码中的换行、缩进以及复制内容保持不变。
-    // 同时覆盖内部 code / 高亮 span，避免站点的 pre-wrap 或 break-all
-    // 仍在宽外框内把代码提前折到下一行。超长行由 pre 横向滚动。
+    // 保留源码换行。新版 ChatGPT 用 whitespace-pre-wrap 类表示用户开启
+    // 换行，不能用固定的 white-space 覆盖原生按钮；内部高亮继承 pre。
+    // 旧版没有该标记时默认不折行，超长行由 pre 横向滚动。
     modernMessageStyle.textContent += `
         main pre {
             box-sizing: border-box !important;
             min-width: 0 !important;
-        }
-
-        main pre,
-        main pre code,
-        main pre code * {
             white-space: pre !important;
             overflow-wrap: normal !important;
             word-break: normal !important;
+        }
+
+        main pre.whitespace-pre-wrap {
+            white-space: pre-wrap !important;
+            overflow-wrap: anywhere !important;
+        }
+
+        main pre code,
+        main pre code * {
+            white-space: inherit !important;
+            overflow-wrap: inherit !important;
+            word-break: inherit !important;
         }
 
         main pre code {
@@ -968,7 +975,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.50
+     * ChatGPT Custom UI v1.4.51
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示

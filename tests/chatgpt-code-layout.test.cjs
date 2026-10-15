@@ -51,6 +51,17 @@ test('code uses available width, scrolls long lines, and preserves source newlin
             el.append(pre);
         });
         assert.equal(await lines('#modern span'), 1);
+        // Real ChatGPT toggles whitespace-pre-wrap on pre, including existing
+        // blocks and syntax spans. The userscript must respect both states.
+        await page.locator('#long').evaluate(el => el.classList.add('whitespace-pre-wrap'));
+        assert.ok(await lines('#long code') > 1);
+        assert.equal(await page.locator('#long code').evaluate(el => getComputedStyle(el).whiteSpace), 'pre-wrap');
+        await page.locator('#modern pre').evaluate(el => el.classList.add('whitespace-pre-wrap'));
+        assert.ok(await lines('#modern span') > 1);
+        assert.equal(await page.locator('#modern span').evaluate(el => getComputedStyle(el).whiteSpace), 'pre-wrap');
+        await page.locator('#long').evaluate(el => el.classList.remove('whitespace-pre-wrap'));
+        await page.locator('#modern pre').evaluate(el => el.classList.remove('whitespace-pre-wrap'));
+        assert.equal(await lines('#modern span'), 1);
         for (const width of [1600, 600, 375]) {
             await page.setViewportSize({ width, height: 1000 });
             assert.equal(await lines('#long code'), 1);
