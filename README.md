@@ -15,7 +15,6 @@
 | 脚本 | 用途 | 源码 | 安装 |
 | --- | --- | --- | --- |
 | ChatGPT Custom UI | 调整 ChatGPT 的页面宽度、字体和颜色；点击正文隐藏输入框、鼠标靠近底部显示；提供滚动箭头、右上角按钮悬停显示和鼠标静止隐藏。 | [查看源码](https://github.com/hmxxgit/browser_javascript_backup/blob/main/chatgpt-custom-ui.user.js) | [直接安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/chatgpt-custom-ui.user.js) |
-
 | X Custom UI | 调整 X / Twitter 的内容宽度、字体、颜色与照片高度；可隐藏右栏、Grok、Premium 等入口，并提供用户配置面板。 | [查看源码](https://github.com/hmxxgit/browser_javascript_backup/blob/main/x-custom-ui.user.js) | [直接安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/x-custom-ui.user.js) |
 
 **手动安装：** 查看源码并复制，在 Tampermonkey 中“添加新脚本”，替换默认内容后保存。
