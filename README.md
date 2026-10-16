@@ -1,52 +1,63 @@
-# 浏览器 JavaScript 脚本
+# 浏览器界面自定义脚本
 
-使用 Tampermonkey 为网页添加个人定制功能。
+为 [ChatGPT](https://chatgpt.com/) 和 [X / Twitter](https://x.com/) 调整阅读布局、字体和界面。需要先安装 [Tampermonkey 扩展](https://www.tampermonkey.net/)。
 
-## 安装
+[快速安装](#快速安装) · [常用操作](#常用操作) · [文件直达](#文件直达) · [更新记录](https://github.com/hmxxgit/browser_javascript_backup/commits/main/) · [反馈问题](https://github.com/hmxxgit/browser_javascript_backup/issues)
 
-1. 打开 [Tampermonkey 官网](https://www.tampermonkey.net/)，选择浏览器并安装扩展。
-2. 点击下表的 **直接安装**，在 Tampermonkey 页面点击 **安装**。
-3. 打开或刷新对应网站，确认脚本已启用。
+## 快速安装
 
-如果扩展提示缺少运行权限，按其提示开启“允许用户脚本”；详见 [官方说明](https://www.tampermonkey.net/faq.php#Q209)。
-
-## 脚本
-
-| 脚本 | 用途 | 源码 | 安装 |
+| 脚本 | 主要功能 | 安装 / 更新 | 源码 |
 | --- | --- | --- | --- |
-| ChatGPT Custom UI | 调整 ChatGPT 的页面宽度、字体和颜色；点击正文隐藏输入框、鼠标靠近底部显示；提供滚动箭头、右上角按钮悬停显示和鼠标静止隐藏。 | [查看源码](https://github.com/hmxxgit/browser_javascript_backup/blob/main/chatgpt-custom-ui.user.js) | [直接安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/chatgpt-custom-ui.user.js) |
-| X Custom UI | 调整 X / Twitter 的内容宽度、字体、颜色与照片高度；可隐藏右栏、Grok、Premium 等入口，并提供用户配置面板。 | [查看源码](https://github.com/hmxxgit/browser_javascript_backup/blob/main/x-custom-ui.user.js) | [直接安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/x-custom-ui.user.js) |
+| ChatGPT Custom UI | 加宽正文、调整字体颜色；自动隐藏输入框；代码换行控制、算法图适应屏幕 | [一键安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/chatgpt-custom-ui.user.js) | [查看脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/chatgpt-custom-ui.user.js) |
+| X Custom UI | 加宽时间线、调整字体和照片高度；隐藏右栏、Grok、Premium；配置备份 | [一键安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/x-custom-ui.user.js) | [查看脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/x-custom-ui.user.js) |
 
-**手动安装：** 查看源码并复制，在 Tampermonkey 中“添加新脚本”，替换默认内容后保存。
+1. 安装 [Tampermonkey](https://www.tampermonkey.net/)，点击上表的 **一键安装**。
+2. 在扩展页面点击 **安装**；已有脚本则点击 **更新**。
+3. 打开或刷新 [ChatGPT](https://chatgpt.com/) / [X](https://x.com/)，开始使用。
 
-## 使用与更新
+**点击后只看到代码？** 复制对应脚本的完整源码，在 Tampermonkey 中选择“添加新脚本”，替换默认内容并保存。缺少运行权限时，按扩展提示开启“允许用户脚本”，参见 [官方说明](https://www.tampermonkey.net/faq.php#Q209)。
 
-- **修改配置：** 在 ChatGPT 页面点击 Tampermonkey 图标 → “自定义配置” → 修改设置 → “保存并刷新”。颜色需要勾选“启用”。
-- **获取更新：** 在 Tampermonkey 管理面板检查脚本更新，新版从本仓库获取。
+## 常用操作
 
-ChatGPT 代码块保留原始缩进和换行；新版页面的自动折行跟随代码块右上角的原生换行按钮，关闭后超长行可横向滚动，旧版页面默认不折行。若 `for` 等语句在回答源码中本来就写成多行，加宽页面仍会保留这些换行，脚本不会自动拼接或修改复制内容。
+| 想做什么 | ChatGPT | X / Twitter |
+| --- | --- | --- |
+| 打开设置 | Tampermonkey → **自定义配置** | 右下角 **X UI ⚙**，或 Tampermonkey → **自定义配置** |
+| 应用设置 | **保存并刷新** | **保存并应用**，立即生效 |
+| 备份配置 | 设置面板 → **复制配置** / **下载配置** | 设置面板 → **配置导入 / 导出（JSON）** → 导出并复制保存 |
+| 恢复默认 | 设置面板 → **恢复默认** | 设置面板 → **恢复默认** → **保存并应用** |
+| 更新脚本 | 点击上表安装链接更新，或在 Tampermonkey 检查更新；完成后刷新网站 | 同左 |
+| 恢复网站原界面 | 在 Tampermonkey 停用脚本，再刷新页面 | 关闭设置面板的 **启用界面调整** 并保存 |
 
-新版 ChatGPT 的 SVG 算法图会随视口高度自动缩小，完整保留图形比例，并为标题、图例和演示按钮预留空间，避免正文加宽后图形被放大到超出屏幕。普通照片、公式和按钮图标不受此限制。
+**ChatGPT 使用要点**
 
-## X Custom UI
+- 点击正文隐藏输入框，鼠标靠近页面底部显示。
+- 代码块右上角按钮切换自动换行；关闭后，长行可横向滚动。源码本身的换行和缩进始终保留。
+- SVG 算法图随屏幕高度缩放，完整保留比例，为图例和演示按钮留出空间。
+- 自定义颜色需要在设置中勾选“启用”。
 
-在 X 页面点击 **Tampermonkey → 自定义配置**，或者右下角 **X UI ⚙**，调整后点击 **保存并应用**，无需刷新。默认正文 19px、行高 1.6、桌面内容宽度 900px，隐藏右栏、Grok 和 Premium，保留 X 原有配色。
+**X 使用要点**
 
-- 宽度调整在视口至少 1000px 时生效，小屏幕保留 X 原生布局。桌面导航固定宽度，内容紧接导航排列，避免 X 的弹性左栏制造大块空白；时间线内部的 600px 限制也会解除，推文卡片与正文随主栏宽度展开。
-- 正文和链接颜色支持 `#RGB` / `#RRGGBB`，留空跟随 X。
-- 浏览器缩放切换时，导航占位与固定层保持一致；展开导航、发帖和账号按钮限制在左栏内，移除 X 原生导航偏移，避免文字和按钮覆盖正文。
-- 照片高度设为 `0` 表示不限制；只作用于主栏推文照片，不改视频和全屏照片查看器。
-- 操作栏悬停显示为可选项；键盘聚焦也会显示，触屏保持可见。
-- 推文底部操作栏按等宽位置排列，收藏和分享与前面的操作保持一致间距；隐藏浏览量后，其位置也会移除。
-- **恢复默认**只填入表单，保存后才生效。**关闭总开关**恢复 X 原始样式；即使隐藏配置按钮，油猴菜单仍可打开面板。
-- **配置导入 / 导出**使用 JSON 文本，可手动复制备份。配置保存在油猴脚本存储中，更新脚本不会覆盖已保存配置。
-- 建议同一页面只启用一个 X 布局脚本，避免宽度、隐藏规则相互覆盖。
+- 正文加宽仅在视口至少 1000px 时生效，小屏幕保留原布局。
+- 照片高度设为 `0` 表示不限制；不影响视频和全屏照片查看器。
+- 文字颜色支持 `#RGB` / `#RRGGBB`，留空使用网站原色。
+- 导入配置后还需 **保存并应用**；更新脚本保留已保存配置。
 
-### 参考项目
+**未生效或布局异常？** 先刷新页面，确认脚本已启用；同一网站只保留一个同类布局脚本。仍有问题，可 [提交反馈](https://github.com/hmxxgit/browser_javascript_backup/issues/new)，附上浏览器、脚本版本和截图。
 
-参考 [Minimal Twitter](https://github.com/typefully/minimal-twitter) 的阅读布局与界面精简思路，以及 [Control Panel for Twitter](https://github.com/insin/control-panel-for-twitter) 使用语义选择器精简导航的方式。此脚本独立实现，未引入第三方运行时或外部请求。
+## 文件直达
 
-### 开发与验证
+| 文件 | 用途 |
+| --- | --- |
+| [ChatGPT 脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/chatgpt-custom-ui.user.js) | 查看完整源码、默认配置与版本 |
+| [X 脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/x-custom-ui.user.js) | 查看完整源码、默认配置与版本 |
+| [依赖与测试命令](https://github.com/hmxxgit/browser_javascript_backup/blob/main/package.json) | 安装开发依赖、运行全部测试 |
+| [ChatGPT 代码块测试](https://github.com/hmxxgit/browser_javascript_backup/blob/main/tests/chatgpt-code-layout.test.cjs) | 换行按钮、横向滚动、源码保留 |
+| [ChatGPT 图表测试](https://github.com/hmxxgit/browser_javascript_backup/blob/main/tests/chatgpt-diagram-layout.test.cjs) | 屏幕适配、动态更新、媒体范围 |
+| [X 界面测试](https://github.com/hmxxgit/browser_javascript_backup/blob/main/tests/x-custom-ui.test.cjs) | 配置保存、布局、交互与移动端 |
+| [MIT 许可证](https://github.com/hmxxgit/browser_javascript_backup/blob/main/LICENSE) | 使用、修改与分发条款 |
+
+<details>
+<summary>开发与验证</summary>
 
 ```sh
 npm ci
@@ -55,6 +66,8 @@ node --check chatgpt-custom-ui.user.js
 node --check x-custom-ui.user.js
 ```
 
-自动化测试使用 Playwright 和已安装的 Microsoft Edge（默认 `msedge`），在离线 X DOM 样例上验证配置持久化、SPA 动态节点、非法输入、存储失败、恢复默认、媒体范围、悬停/键盘操作及移动端面板。也可设置 `X_UI_BROWSER=chrome` 使用已安装的 Chrome。测试不会访问真实账号。
+测试使用 Playwright 和本机 Microsoft Edge，在离线页面样例上运行，不访问真实账号。使用 Chrome：`X_UI_BROWSER=chrome npm test`。
 
-已在真实 Edge + Tampermonkey + X 页面检查配置入口与应用效果。X 会修改页面结构和属性，后续若某项失效，需要更新对应选择器；本脚本不包含推文内容过滤或广告识别。
+X 界面精简思路参考 [Minimal Twitter](https://github.com/typefully/minimal-twitter) 和 [Control Panel for Twitter](https://github.com/insin/control-panel-for-twitter)；脚本独立实现，不引入外部运行时。
+
+</details>
