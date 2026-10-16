@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.52
+// @version      1.4.53
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -989,7 +989,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.52
+     * ChatGPT Custom UI v1.4.53
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -1181,6 +1181,13 @@
      */
     const DISCLAIMER_TEXT =
         "chatgpt can make mistakes. check important info.";
+
+    // 新版文案加入了 “is AI and”；仍只匹配完整提示，避免误删普通正文。
+    function isDisclaimerText(text) {
+        const normalized = normalizeText(text);
+        return normalized === DISCLAIMER_TEXT
+            || normalized === "chatgpt is ai and can make mistakes. check important info.";
+    }
 
 
 
@@ -1984,10 +1991,10 @@
 
        新逻辑：
 
-       1. 找到最小的免责声明文字元素。
-       2. 直接删除这个最小元素。
-       3. 绝不向上删除包含 button / input / editor 的容器。
-       4. 最多只清理完全空且没有图标/交互控件的空壳。
+       1. 找到最小的免责声明文字元素，兼容新旧完整文案。
+       2. 用 display:none 隐藏，保留 React 管理的节点。
+       3. 绝不隐藏包含 button / input / editor 的容器。
+       4. 继续扫描其他匹配项，兼容同时挂载多个底部提示。
        ========================================================= */
 
     function removeDisclaimerFromRoot(
@@ -1997,25 +2004,20 @@
         if (!root) return false;
 
         const candidates = [];
+        let hidden = false;
 
         if (
             root.nodeType === Node.TEXT_NODE
         ) {
 
             if (
-                normalizeText(
-                    root.nodeValue
-                )
-                !==
-                DISCLAIMER_TEXT
+                !isDisclaimerText(root.nodeValue)
             ) {
 
                 return false;
             }
 
-            root.remove();
-
-            return true;
+            return removeDisclaimerFromRoot(root.parentElement);
         }
 
         if (
@@ -2115,7 +2117,7 @@
 
 
             if (
-                text !== DISCLAIMER_TEXT
+                !isDisclaimerText(text)
             ) {
                 continue;
             }
@@ -2152,11 +2154,7 @@
                 ) {
 
                     if (
-                        normalizeText(
-                            child.textContent
-                        )
-                        ===
-                        DISCLAIMER_TEXT
+                        isDisclaimerText(child.textContent)
                     ) {
 
                         target =
@@ -2188,7 +2186,7 @@
             ) {
 
                 /*
-                 * 尝试只删除真正的纯文本节点。
+                 * 尝试只隐藏纯提示文本所在的无控件元素。
                  */
                 const walker =
                     document.createTreeWalker(
@@ -2212,11 +2210,7 @@
                 ) {
 
                     if (
-                        normalizeText(
-                            node.nodeValue
-                        )
-                        ===
-                        DISCLAIMER_TEXT
+                        isDisclaimerText(node.nodeValue)
                     ) {
 
                         textNodes.push(
@@ -2229,12 +2223,16 @@
                 textNodes.forEach(
                     textNode => {
 
-                        textNode.remove();
+                        const parent = textNode.parentElement;
+                        if (parent && !containsProtectedControls(parent)) {
+                            parent.style.setProperty("display", "none", "important");
+                        }
                     }
                 );
 
 
-                return true;
+                hidden = true;
+                continue;
             }
 
 
@@ -2243,74 +2241,18 @@
              * -------------------------------------------------
              * 第三步：
              * target 没有交互控件，
-             * 可以安全删除最小免责声明元素。
+             * 可以安全隐藏最小免责声明元素。
              * -------------------------------------------------
              */
 
-            const parentBeforeRemove =
-                target.parentElement;
+            // 保留 React 管理的节点，避免 hydration / 后续更新因节点被删除而崩溃。
+            target.style.setProperty("display", "none", "important");
 
-
-            target.remove();
-
-
-
-            /*
-             * -------------------------------------------------
-             * 第四步：
-             * 只清理真正完全空的无害 wrapper。
-             * -------------------------------------------------
-             *
-             * 最多向上清理 2 层。
-             *
-             * 一旦：
-             *
-             * 有 button
-             * 有输入框
-             * 有 SVG
-             * 有图片
-             * 有文字
-             *
-             * 就立即停止。
-             */
-
-            let parent =
-                parentBeforeRemove;
-
-
-            for (
-                let i = 0;
-                i < 2 && parent;
-                i++
-            ) {
-
-                if (
-                    !isSafeEmptyWrapper(
-                        parent
-                    )
-                ) {
-
-                    break;
-                }
-
-
-                const nextParent =
-                    parent.parentElement;
-
-
-                parent.remove();
-
-
-                parent =
-                    nextParent;
-            }
-
-
-            return true;
+            hidden = true;
         }
 
 
-        return false;
+        return hidden;
     }
 
 
@@ -2337,10 +2279,10 @@
             if (
                 element.isConnected &&
                 element.closest("main") &&
-                normalizeText(element.textContent) === DISCLAIMER_TEXT &&
+                isDisclaimerText(element.textContent) &&
                 !containsProtectedControls(element)
             ) {
-                element.remove();
+                element.style.setProperty("display", "none", "important");
             }
         }
     }
@@ -2447,18 +2389,10 @@
                 ) {
 
                     if (
-                        normalizeText(
-                            node.nodeValue
-                        )
-                        ===
-                        DISCLAIMER_TEXT
+                        isDisclaimerText(node.nodeValue)
                     ) {
 
-                        node.remove();
-
-
-                        removed =
-                            true;
+                        removed = removeDisclaimerFromRoot(node.parentElement) || removed;
                     }
 
 
