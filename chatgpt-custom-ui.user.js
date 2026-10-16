@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.51
+// @version      1.4.52
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -969,13 +969,27 @@
         main pre code {
             max-width: none !important;
         }
+
+        /* DIL 将算法图渲染为 img，而非页面中的 svg 节点。
+         * 正文加宽时 width:100% 会按比例把图撑到数屏高。
+         * 限制图高并用 contain 完整显示，为标题、图例和操作区留出空间；
+         * 不限制普通照片、公式、视频或按钮图标。
+         */
+        [data-dil-message-id] img[data-d-component="svg"],
+        main [data-message-author-role] img[data-d-component="svg"] {
+            max-width: 100% !important;
+            width: 100% !important;
+            height: auto !important;
+            max-height: clamp(120px, calc(100dvh - 400px), 560px) !important;
+            object-fit: contain !important;
+        }
     `;
     document.documentElement.appendChild(modernMessageStyle);
 
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.51
+     * ChatGPT Custom UI v1.4.52
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
