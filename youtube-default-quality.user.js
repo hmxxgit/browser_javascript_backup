@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      2.0.0
+// @version      2.1.0
 // @description  可配置首选画质，不足时向下匹配；每个视频仅设置一次，随后尊重用户选择。
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
@@ -215,6 +215,7 @@
         // The initial element can exist before YouTube attaches its API. Do not bind
         // the DOM addEventListener and mistake it for the player's event bus.
         bindPlayer(typeof candidate?.getVideoData === 'function' ? candidate : null);
+        noticeContentPlayback(session, candidate);
         if (session) schedule(session, 0);
     }
 
@@ -260,14 +261,80 @@
         return null;
     }
 
+    // An internal range request can leave the native menu on Auto. Lazily build
+    // YouTube's OWN quality menu once, then select its actual fixed option. The
+    // advanced-menu command was checked in the current player source and UI.
+    function prepareNativeSelection(state, candidate, target) {
+        const existing = nativeQualityOption(candidate, target);
+        if (existing) return { option: existing, restore() {} };
+        const button = candidate.querySelector('.ytp-settings-button');
+        if (typeof candidate.openSettingsMenuItem !== 'function' || !button) {
+            return { option: null, restore() {} }; // players without this native UI
+        }
+        if (state.menuPrepared) return { waiting: true, restore() {} };
+        state.menuPrepared = true;
+        // The programmatic advanced-menu command can show the popup before the
+        // gear's aria-expanded is updated. The player's shown class is authoritative.
+        const isExpanded = () => candidate.classList.contains('ytp-settings-shown') ||
+            button.getAttribute('aria-expanded') === 'true';
+        const expanded = isExpanded();
+        const previousFocus = document.activeElement;
+        const attribute = 'data-yt-default-quality-preparing';
+        const previousAttribute = candidate.getAttribute(attribute);
+        const style = document.createElement('style');
+        style.textContent = `[${attribute}] .ytp-settings-menu{visibility:hidden!important}`;
+        candidate.setAttribute(attribute, '');
+        candidate.append(style);
+        const restore = () => {
+            try {
+                if (candidate.isConnected && playerVideoId(candidate) === state.id) {
+                    // The first click can merely release YouTube's programmatic
+                    // popup latch. At most two UI toggles; neither writes quality.
+                    for (let n = 0; n < 2 && isExpanded() !== expanded; n++) button.click();
+                }
+            } finally {
+                style.remove();
+                if (previousAttribute === null) candidate.removeAttribute(attribute);
+                else candidate.setAttribute(attribute, previousAttribute);
+                if (previousFocus?.isConnected && document.activeElement !== previousFocus) previousFocus.focus();
+            }
+        };
+        try {
+            candidate.openSettingsMenuItem('menu_item_video_quality_advanced');
+            const option = nativeQualityOption(candidate, target);
+            if (option) return { option, restore };
+            // Some player versions construct options asynchronously. Retry READS
+            // only; never repeatedly open menus or issue an extra range request.
+            restore();
+            return { waiting: true, restore() {} };
+        } catch (error) { restore(); throw error; }
+    }
+
+    function noticeContentPlayback(state, candidate) {
+        if (!state || state.playbackStarted || !state.id || navigating ||
+            !['waiting', 'expired'].includes(state.phase)) return;
+        try {
+            if (playerVideoId(candidate) !== state.id ||
+                candidate.classList.contains('ad-showing') || candidate.classList.contains('ad-interrupting') ||
+                candidate.getVideoData()?.isAd || candidate.getPlayerState?.() !== 1) return;
+            // Ad playback must not consume this opportunity. Check API events too:
+            // native `playing` may fire before getPlayerState() reports main content.
+            state.playbackStarted = true;
+            state.phase = 'waiting';
+            state.probes = 0;
+            state.deadline = Date.now() + WAIT_MS;
+        } catch { /* a disposed / not-yet-ready player cannot unlock anything */ }
+    }
+
     function probe(state) {
         if (session !== state || state.phase !== 'waiting' || navigating) return;
         const candidate = findPlayer();
         const detectedId = urlVideoId() || playerVideoId(candidate);
         if (detectedId && detectedId !== state.id) { refresh(); return; }
+        noticeContentPlayback(state, candidate);
         if (Date.now() >= state.deadline || state.probes >= MAX_PROBES) {
             finish(state, 'expired');
-            console.warn('[YouTube Default Quality] 等待播放器超时，本视频不再自动设置。');
+            if (state.id) console.warn('[YouTube Default Quality] 本轮等待超时；首次主视频播放仍可触发一次就绪检查。');
             return;
         }
         state.probes += 1;
@@ -284,29 +351,27 @@
                 // One policy for every content type: live, premiere, replay,
                 // Shorts and embeds. Only actual quality availability matters.
                 const target = chooseQuality(candidate.getAvailableQualityLevels(), state.preferredHeight);
-                const option = target ? nativeQualityOption(candidate, target) : null;
-                if (target && matches(state, candidate)) {
-                    // Lock BEFORE calling: synchronous quality events, errors, or
-                    // delayed acknowledgements must never cause a second write.
+                if (!target || !matches(state, candidate)) { schedule(state, retryDelay); return; }
+                const selection = prepareNativeSelection(state, candidate, target);
+                if (selection.waiting) { schedule(state, retryDelay); return; }
+                try {
+                    if (!matches(state, candidate)) { schedule(state, retryDelay); return; }
+                    // Lock before the ONLY quality action. Native menu creation is
+                    // readiness work, not a successful quality setting.
                     finish(state, 'attempted');
-                    // A range-only call can leave the native menu on Auto when
-                    // Auto already decodes the target resolution (no quality-change
-                    // event occurs). An existing native option applies the fixed
-                    // choice AND refreshes its checked state in one action. Hidden
-                    // options work too: do not open menus or click Settings.
-                    if (option) option.click();
+                    if (selection.option) selection.option.click();
                     else candidate.setPlaybackQualityRange(target, target);
                     // Preference acknowledgement is not proof that decoded frames
                     // already have this resolution. Read only; never fight ABR.
                     if (typeof candidate.getPreferredQuality === 'function' &&
                         candidate.getPreferredQuality() === target &&
-                        (!option || option.getAttribute('aria-checked') === 'true')) {
+                        (!selection.option || selection.option.getAttribute('aria-checked') === 'true')) {
                         state.phase = 'applied';
                     } else {
                         console.warn('[YouTube Default Quality] 已请求画质，未确认首选档位；不重复设置。');
                     }
                     return;
-                }
+                } finally { selection.restore(); }
             }
         } catch (error) {
             // A setter may mutate and then throw. Retrying it could override a user
@@ -329,7 +394,7 @@
         if (!player?.contains(option)) return;
         // Opening Settings, viewing Auto (1080p), or moving keyboard focus is not
         // a manual quality choice. Only activating a quality option yields control.
-        if (session?.phase === 'waiting') finish(session, 'manual');
+        if (session && ['waiting', 'expired'].includes(session.phase)) finish(session, 'manual');
     }
 
     for (const name of ['pointerdown', 'click', 'keydown']) {
@@ -352,20 +417,6 @@
         document.addEventListener(name, event => {
             if (!(event.target instanceof HTMLVideoElement)) return;
             refresh();
-            // A waiting room may have no quality options for hours. Its first
-            // actual playback gets one fresh bounded readiness window; manual or
-            // completed sessions are never unlocked, and replaying cannot loop it.
-            if (name === 'playing' && session?.id && !session.playbackStarted &&
-                player?.contains(event.target) && typeof player.getPlayerState === 'function' &&
-                player.getPlayerState() === 1) {
-                session.playbackStarted = true;
-                if (session.phase === 'expired') {
-                    session.phase = 'waiting';
-                    session.probes = 0;
-                    session.deadline = Date.now() + WAIT_MS;
-                    schedule(session, 0);
-                }
-            }
         }, true);
     }
     window.addEventListener('popstate', refresh);

@@ -54,7 +54,14 @@ async function setup(options = {}) {
         window.nativeActions = 0;
         window.settingsClicks = 0;
         window.buses = [];
-        document.querySelector('.ytp-settings-button').addEventListener('click', () => { settingsClicks += 1; });
+        document.querySelector('.ytp-settings-button').addEventListener('click', event => {
+            settingsClicks += 1;
+            const p = document.querySelector('[data-test-player]');
+            if (model.firstCloseIgnored && p.classList.contains('ytp-settings-shown')) { model.firstCloseIgnored = false; return; }
+            const expanded = !p.classList.contains('ytp-settings-shown');
+            p.classList.toggle('ytp-settings-shown', expanded);
+            event.currentTarget.setAttribute('aria-expanded', String(expanded));
+        });
         for (const [index, item] of [...document.querySelectorAll('[role="menuitemradio"]')].entries()) {
             const quality = ['premium1080', 'hd1080', 'large', 'auto'][index];
             item.addEventListener('click', () => {
@@ -63,6 +70,11 @@ async function setup(options = {}) {
                 writes.push({ id: model.id, min: quality, max: quality });
                 for (const radio of document.querySelectorAll('[role="menuitemradio"]')) radio.setAttribute('aria-checked', String(radio === item));
             });
+        }
+        window.menuOpens = 0;
+        if (model.lazyNativeMenu) {
+            window.pendingQualityMenu = document.querySelector('.ytp-quality-menu');
+            pendingQualityMenu.remove();
         }
         window.installPlayer = (replace = false) => {
             let p = document.querySelector('[data-test-player]');
@@ -95,6 +107,20 @@ async function setup(options = {}) {
                 { quality: 'hd1080', qualityLabel: '1080p60', isPlayable: true },
                 { quality: 'large', qualityLabel: '480p', isPlayable: true },
             ];
+            if (model.lazyNativeMenu) p.openSettingsMenuItem = key => {
+                if (key !== 'menu_item_video_quality_advanced') throw new Error('wrong native menu key');
+                menuOpens += 1;
+                p.classList.add('ytp-settings-shown');
+                p.querySelector('.ytp-settings-button').setAttribute('aria-expanded', model.staleSettingsAria ? 'false' : 'true');
+                if (model.nativeOpenThrows) throw new Error('menu not ready');
+                const append = () => p.querySelector('.ytp-settings-menu').append(pendingQualityMenu);
+                if (model.lazyMenuAsync) setTimeout(append, 0);
+                else append();
+                if (model.navigateDuringNativeOpen) {
+                    model.id = model.responseId = model.navigateDuringNativeOpen;
+                    history.pushState({}, '', `/watch?v=${model.id}`);
+                }
+            };
             p.setPlaybackQuality = () => { oldSetterCalls += 1; };
             p.setPlaybackQualityRange = (min, max) => {
                 writes.push({ id: model.id, min, max });
@@ -741,3 +767,106 @@ test('configuration opens and saves under YouTube-style Trusted Types enforcemen
         assert.deepEqual(errors, []);
     } finally { await context.close(); }
 });
+
+
+for (const lazyMenuAsync of [false, true]) {
+    test(`lazy native menu is prepared once, fixes Auto 1080p and restores UI (async=${lazyMenuAsync})`, async () => {
+        const { page, context, errors } = await setup({ nativeMenu: true, lazyNativeMenu: true,
+            lazyMenuAsync, preferred: 'auto', playback: 'hd1080' });
+        try {
+            await page.clock.runFor(2_001);
+            assert.equal(await page.evaluate(() => menuOpens), 1);
+            assert.equal(await page.evaluate(() => nativeActions), 1);
+            assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
+            assert.equal(await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).getAttribute('aria-checked'), 'false');
+            assert.equal(await page.getByRole('menuitemradio', { name: '1080p60 HD', exact: true }).getAttribute('aria-checked'), 'true');
+            assert.equal(await page.locator('.ytp-settings-button').getAttribute('aria-expanded'), 'false');
+            assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+            assert.deepEqual(errors, []);
+            await page.evaluate(() => { model.preferred = 'auto'; });
+            await signals(page);
+            assert.equal((await writes(page)).length, 1);
+            assert.equal(await page.evaluate(() => model.preferred), 'auto');
+            assert.equal(await page.evaluate(() => menuOpens), 1);
+        } finally { await context.close(); }
+    });
+}
+
+test('native menu preparation failure restores UI and never loops or falls back to a second quality action', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, nativeOpenThrows: true });
+    try {
+        await signals(page);
+        assert.equal(await page.evaluate(() => menuOpens), 1);
+        assert.deepEqual(await writes(page), []);
+        assert.equal(await page.locator('.ytp-settings-button').getAttribute('aria-expanded'), 'false');
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+    } finally { await context.close(); }
+});
+
+test('navigation during menu preparation cannot apply the old video selection to the new video', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, navigateDuringNativeOpen: B });
+    try {
+        await page.clock.runFor(2_001);
+        assert.deepEqual((await writes(page)).map(x => x.id), [B]);
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+    } finally { await context.close(); }
+});
+
+test('long ads do not consume the main-content opportunity, even if playing arrives before the player state', async () => {
+    const { page, context } = await setup({ isAd: true, state: 1 });
+    try {
+        await page.clock.runFor(60_000);
+        assert.deepEqual(await writes(page), []);
+        await page.evaluate(() => {
+            model.isAd = false;
+            model.state = 3;
+            document.querySelector('video').dispatchEvent(new Event('playing'));
+        });
+        await page.clock.runFor(1);
+        assert.deepEqual(await writes(page), []);
+        await page.evaluate(() => { model.state = 1; playerSignal('onStateChange'); });
+        await page.clock.runFor(1);
+        assert.equal((await writes(page)).length, 1);
+        await page.evaluate(() => { model.preferred = 'auto'; });
+        await signals(page);
+        assert.equal((await writes(page)).length, 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'auto');
+    } finally { await context.close(); }
+});
+
+test('manual selection after expiry remains protected when the first content playback starts later', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        await page.clock.runFor(60_000);
+        await page.getByRole('menuitemradio', { name: '480p', exact: true }).click();
+        await page.evaluate(() => { model.levels = ['hd1080', 'large']; model.state = 1; playerSignal('onStateChange'); });
+        await signals(page);
+        assert.deepEqual(await writes(page), [{ id: A, min: 'large', max: 'large' }]);
+    } finally { await context.close(); }
+});
+
+test('repeated playback events cannot keep extending the main-content readiness window', async () => {
+    const { page, context } = await setup({ levels: [], state: 1 });
+    try {
+        await signals(page);
+        assert.ok(await page.evaluate(() => reads) <= 30);
+        await page.evaluate(() => { model.levels = ['hd1080']; playerSignal('onStateChange'); });
+        await page.clock.runFor(2_001);
+        assert.deepEqual(await writes(page), []);
+    } finally { await context.close(); }
+});
+
+
+for (const firstCloseIgnored of [false, true]) {
+    test(`native popup restoration handles stale aria-expanded and a programmatic latch (${firstCloseIgnored})`, async () => {
+        const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true,
+            staleSettingsAria: true, firstCloseIgnored });
+        try {
+            assert.equal((await writes(page)).length, 1);
+            assert.equal(await page.locator('.ytp-settings-shown').count(), 0);
+            assert.equal(await page.evaluate(() => settingsClicks), firstCloseIgnored ? 2 : 1);
+            assert.equal(await page.evaluate(() => menuOpens), 1);
+            assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+        } finally { await context.close(); }
+    });
+}

@@ -26,6 +26,8 @@ const snapshot = async page => {
         checked: [...p.querySelectorAll('.ytp-quality-menu [aria-checked="true"]')].map(e => e.textContent.trim()),
         actions: window.autoRegressionActions,
         settingsClicks: window.autoRegressionSettingsClicks,
+        menuInitializations: window.autoRegressionMenuInitializations,
+        canInitializeNativeMenu: typeof p.openSettingsMenuItem === 'function' && !!p.querySelector('.ytp-settings-button'),
         settingsExpanded: p.querySelector('.ytp-settings-button')?.getAttribute('aria-expanded'),
         videoId: p.getVideoData().video_id,
         isLiveContent: p.getPlayerResponse().videoDetails.isLiveContent,
@@ -75,6 +77,11 @@ const snapshot = async page => {
                     const p = document.getElementById('movie_player');
                     window.autoRegressionActions = [];
                     window.autoRegressionSettingsClicks = 0;
+                    window.autoRegressionMenuInitializations = 0;
+                    if (typeof p.openSettingsMenuItem === 'function') {
+                        const open = p.openSettingsMenuItem;
+                        p.openSettingsMenuItem = function (...args) { autoRegressionMenuInitializations += 1; return open.apply(this, args); };
+                    }
                     const range = p.setPlaybackQualityRange;
                     p.setPlaybackQualityRange = function (...args) {
                         autoRegressionActions.push({ kind: 'range', args });
@@ -92,10 +99,11 @@ const snapshot = async page => {
                 await page.waitForFunction(() => document.getElementById('movie_player').getPreferredQuality() === 'hd1080');
                 const after = await snapshot(page);
                 assert.equal(after.actions.length, 1);
-                assert.equal(after.settingsClicks, 0);
+                assert.ok(after.settingsClicks <= (existingMenu ? 0 : 2));
+                assert.equal(after.menuInitializations, !existingMenu && before.canInitializeNativeMenu ? 1 : 0);
                 assert.notEqual(after.settingsExpanded, 'true');
-                assert.equal(after.settingsExpanded, before.settingsExpanded);
-                assert.equal(after.actions[0].kind, existingMenu ? 'native' : 'range');
+                assert.equal(after.settingsExpanded === 'true', before.settingsExpanded === 'true');
+                assert.equal(after.actions[0].kind, existingMenu || before.canInitializeNativeMenu ? 'native' : 'range');
                 // Auto may already have queued a lower format during setup. Let
                 // the fixed request finish decoding before checking the menu;
                 // some player experiments temporarily check the decoded format.
@@ -110,8 +118,13 @@ const snapshot = async page => {
                 const fixed = await snapshot(page);
                 assert.match(fixed.checked[0], /^1080p/);
                 assert.ok(!fixed.checked.some(label => /^Auto/.test(label)));
+                await page.locator('#movie_player .ytp-panel-back-button:visible').first().click();
+                fixed.qualitySummary = await page.locator('.ytp-settings-menu .ytp-menuitem').filter({ hasText: /^Quality/ }).innerText();
+                assert.match(fixed.qualitySummary.replace(/\s+/g, ' '), /^Quality\s*1080p/);
+                assert.ok(!fixed.qualitySummary.includes('Auto'));
+                await openQuality(page);
                 report.checks.push({ check: `Auto ${startupHeight}p becomes fixed 1080p (${existingMenu ? 'existing hidden menu' : 'menu not initialized'})`, before, after, fixed });
-                console.error(`PASS: Auto ${startupHeight}p becomes fixed 1080p (${existingMenu ? 'hidden native option' : 'range before menu initialization'})`);
+                console.error(`PASS: Auto ${startupHeight}p becomes fixed 1080p (${existingMenu ? 'existing native option' : 'native menu initialization or range fallback'}), checked option and Quality summary verified`);
 
                 await page.locator('.ytp-quality-menu [role="menuitemradio"]').filter({ hasText: /^Auto/ }).click();
                 await page.evaluate(() => {

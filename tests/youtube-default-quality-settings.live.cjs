@@ -85,6 +85,21 @@ const path = require('node:path');
             });
             assert.equal(result.id, 'aqz-KE-bpKQ');
             if (height === 4320) assert.ok(!result.levels.includes('hd4320'), '8K must be unavailable to test downward fallback');
+            const button = page.locator('#movie_player .ytp-settings-button');
+            if (await button.getAttribute('aria-expanded') !== 'true') await button.click();
+            if (!await page.locator('#movie_player .ytp-quality-menu').isVisible()) {
+                await page.locator('.ytp-settings-menu .ytp-menuitem').filter({ hasText: /^Quality/ }).click();
+            }
+            const fixedHeight = Number(expected.slice(2));
+            await page.waitForFunction(h => [...document.querySelectorAll('#movie_player .ytp-quality-menu [aria-checked="true"]')]
+                .some(e => new RegExp(`^${h}p`).test(e.textContent.trim())), fixedHeight);
+            result.checked = await page.locator('#movie_player .ytp-quality-menu [aria-checked="true"]').allTextContents();
+            assert.ok(!result.checked.some(text => /Auto/.test(text)));
+            await page.locator('#movie_player .ytp-panel-back-button:visible').first().click();
+            result.qualitySummary = await page.locator('.ytp-settings-menu .ytp-menuitem').filter({ hasText: /^Quality/ }).innerText();
+            assert.match(result.qualitySummary.replace(/\s+/g, ' '), new RegExp(`^Quality\\s*${fixedHeight}p`));
+            assert.ok(!result.qualitySummary.includes('Auto'));
+            await button.click();
             report.checks.push({ savedHeight: height, expected, result });
             console.error(`PASS: Tampermonkey saved ${height}p -> fixed ${expected}, decoded ${result.width}x${result.height}`);
         }
