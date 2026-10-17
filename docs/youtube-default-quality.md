@@ -4,7 +4,7 @@
 
 1. 在 Chrome / Edge 安装 [Tampermonkey](https://www.tampermonkey.net/)。按扩展提示允许用户脚本执行（[官方说明](https://www.tampermonkey.net/faq.php#Q209)）。
 2. 打开仓库中的 [youtube-default-quality.user.js](../youtube-default-quality.user.js)，点击 **Raw**，在 Tampermonkey 中安装。如果只显示源码，在 Tampermonkey 新建脚本，完整替换默认内容并保存。
-3. 刷新 YouTube，播放桌面版普通视频。无需额外配置；每次切换到不同的视频，重新应用默认策略。
+3. 刷新 YouTube，打开任意可播放的视频（含直播、Shorts 和嵌入式播放器）。无需额外配置；每次切换到不同的视频，重新应用默认策略。
 4. 同一 YouTube 页面只启用一个画质控制脚本。停用时，在 Tampermonkey 关闭本脚本并刷新页面。
 
 正式安装与更新使用 [main 分支安装链接](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/youtube-default-quality.user.js)。如曾安装 PR / 测试分支版本，请从该链接覆盖安装，以便后续跟随正式版本更新。
@@ -13,10 +13,10 @@
 
 - 只使用当前 `getAvailableQualityLevels()` 返回的选项，排除 `auto`。有 `hd1080` 则优先选择它，即使同时有 1440P / 4K。
 - Auto 正好解码为 1080P 不等于固定 1080P。每次新的视频访问都执行一次明确选择，不因当前解码档位或已有首选档位相同而跳过。
-- 已结束的直播回放也执行相同策略。`isLiveContent` 表示视频来源于直播，不等于现在仍在直播；通过 `microformat.playerMicroformatRenderer.liveBroadcastDetails.endTimestamp` 确认结束，且未标记为正在直播 / 待播。结束信息尚未加载时，在原有等待额度内重试。
+- `youtube.com` 及其子域名统一执行该策略；不依据直播、首播、回放等元数据跳过。Shorts、`/live/ID`、`/embed/ID`、`/v/ID` 和 iframe 均可执行；频道直播页、首页或列表页存在实际播放器时，从播放器取得视频 ID。没有播放内容的页面不设置。
 - 没有 1080P 时，在实际选项中比较高度；识别 `hdNNNN` 与 YouTube 的旧档位标识。对未来未知的标识，保留播放器当前“最高在前”的返回顺序，不凭空创建选项。
-- 状态按连续的 `/watch?v=视频ID` 访问维护。A → B → A 每次重新设置；同一 ID 的列表参数、时间参数变化、重播、暂停、seek、全屏、窗口切换、播放器重建均不会解除已完成状态。离开 watch 页面清理该次访问状态；整页刷新属于新的一次访问。
-- `waiting` 可以重试**读取和就绪检查**；`applied`、`attempted`、`manual`、`expired`、`unsupported` 都是该次访问的终态，不再写入。
+- 状态按连续的活动视频 ID 维护。A → B → A 每次重新设置；同一 ID 的列表参数、时间参数变化、重播、暂停、seek、全屏、窗口切换、播放器重建均不会解除已完成状态。URL 不含视频 ID 时，同页播放器短暂消失也保留锁定；小窗仍播放同一视频不会重复设置。整页刷新属于新的一次访问。
+- `waiting` 可以重试**读取和就绪检查**；`applied`、`attempted`、`manual` 均不再写入。`expired` 停止检查，只有尚未经历首次实际播放的页面可在开播时获得一次新额度，绝不解锁已设置或手动选择的状态。
 - 首次动作前先锁定为 `attempted`。已存在原生画质选项时，用当前 `getAvailableQualityData()` 的可播放、非付费标签精确匹配该选项并调用其原生点击处理；选项尚未初始化或无法安全匹配时，调用 `setPlaybackQualityRange(target, target)`。二者只执行其一，不会先设接口再补点一次菜单。
 - 选项可以在隐藏面板中生效，不主动打开设置菜单；HD / 4K 等 `sup` 徽标不参与标签匹配，也不按固定菜单下标选择。即使动作发出同步事件、没有确认或抛异常，也不重复选择，以防第一次已生效后覆盖用户操作。
 - 设置后只读取 `getPreferredQuality()` 作为确认；它不代表已解码画面立即达到目标分辨率。网络缓冲、编码切换仍由 YouTube 处理，脚本不持续纠正 ABR 的结果。
@@ -34,8 +34,8 @@
 - 播放器事件：`onReady`、`onStateChange`、`onPlaybackQualityChange`、`videodatachange`。非公开事件可能不被各版本播放器转发，因此不单独依赖它们。
 - `popstate` / `pageshow` 处理历史导航和页面恢复；`pagehide` 清理计时器、解绑播放器事件。
 - 若支持 [Navigation API](https://developer.chrome.com/docs/web-platform/navigation-api)，还监听 `currententrychange`，覆盖没有 YouTube 导航事件的 `pushState` / `replaceState`。不替换网站的 History 方法；旧浏览器仍使用上述事件。
-- URL 视频 ID、`getVideoData().video_id`、`getPlayerResponse().videoDetails.videoId` 三者必须一致，并确认当前 DOM 播放器仍连接。读取画质列表后再次检查身份，防止旧任务作用于新视频。
-- 就绪检查延迟为 0、500ms、1s，之后不超过每 2s 一次；最多 45 秒或 30 次检查，以先到者为准。事件不会重置额度。完成后无轮询，始终至多一个计时器。
+- 从 URL 或 `getVideoData().video_id` 确认身份；URL 和播放器同时提供 ID 时必须一致，内部 response 提供 ID 时也必须一致。嵌入式播放器不必提供 response 接口。确认 DOM 播放器仍连接，读取画质列表后再次检查身份，防止旧任务作用于新视频。Shorts 存在多个播放器时优先匹配 ID 且可见的活动播放器。
+- 就绪检查延迟为 0、500ms、1s，之后不超过每 2s 一次；最多 45 秒或 30 次检查，以先到者为准。普通事件不会重置额度；待播超时后首次实际 `playing` 且播放器状态为播放中时，至多补一次同样的有限额度。完成后无轮询，始终至多一个计时器。
 - 只保留一个当前视频状态和一个播放器引用；更换播放器时解绑旧事件，重复注入由实例标记阻止。没有全页 MutationObserver，也没有常驻高频轮询。
 
 ## 接口依据
@@ -62,9 +62,30 @@ node tests/youtube-default-quality.live.cjs
 node tests/youtube-default-quality-auto.live.cjs
 # 用户反馈的实际直播回放：Auto（720P）与全新页面启动检查。
 YOUTUBE_TEST_VIDEO=Gt4_60l-mDc YOUTUBE_TEST_START_QUALITY=hd720 node tests/youtube-default-quality-auto.live.cjs
+# 直播、回放、Shorts 和第三方页面内 iframe。
+node tests/youtube-default-quality-surfaces.live.cjs
 ```
 
-离线测试在真实 Chromium 浏览器中加载模拟播放器，验证脚本状态机；不等于验证 YouTube 的真实菜单、接口或视频画面。1.0.2 的完整仓库 `npm test` 共 53 项通过；YouTube 的 40 项在 Edge 和 Chrome 均通过。真实网站检查结果见下方记录。
+离线测试在真实 Chromium 浏览器中加载模拟播放器，验证脚本状态机；不等于验证 YouTube 的真实菜单、接口或视频画面。1.1.0 的完整仓库 `npm test` 共 71 项通过；YouTube 的 58 项在 Edge 和 Chrome 均通过。真实网站检查结果见下方记录。
+
+### 1.1.0 全站统一策略（2026-10-17）
+
+移除全部直播 / 待播类型过滤，扩展到 `youtube.com` 及其所有子域名（HTTP / HTTPS），去掉 `@noframes`。不同播放器只按实际视频身份与可用画质判断；不存在“先等直播结束才设置”的限制。广告与尚未初始化的播放器仅等待就绪，不消耗内容的一次设置机会。
+
+新增模拟覆盖域名匹配、全部路由、缺少 response API 的嵌入播放器、Shorts 屏外重复播放器、无 URL 视频 ID 的延迟初始化与播放器重建，以及待播超时后首次开播。移动站点、Music 等子域名验证的是匹配与模拟行为，未在其完整真实应用中逐一验证。
+
+实际联网脚本：[youtube-default-quality-surfaces.live.cjs](../tests/youtube-default-quality-surfaces.live.cjs)。Edge 和 Chrome 各完成以下 4 项，均在全新临时环境 document-start 注入，读取固定首选 `hd1080` 并等待实际解码尺寸：
+
+| 实际页面 | 结果 |
+| --- | --- |
+| 用户反馈的 `Gt4_60l-mDc` 直播回放 | 固定 1080P；1920×1080 |
+| `@LofiGirl/live` 当次正在直播的 `1-LpQekNa9g`，实际 `isLive` / `isLiveNow` 为 true | 固定 1080P；1920×1080 |
+| Shorts `sUZe3nd-3AY` | 固定 1080P；1080×1920 竖屏 |
+| 第三方测试父页面中的 YouTube iframe，`aqz-KE-bpKQ` | 固定 1080P；1920×1080；父页面不执行脚本 |
+
+嵌入式播放器在请求播放前可能没有画质列表；联网测试先请求静音播放，再等待脚本选择，未通过预设画质来准备该场景。另在 Edge 对反馈视频重跑 Auto（720P）专项 5 项全部通过：两种菜单初始化状态均变为固定 1080P，随后手动 Auto 均保持，以及全新页面 document-start 启动。
+
+这些检查访问真实播放器与媒体，不安装 Tampermonkey；不等于扩展安装流程端到端验证。首播等待室开播、移动站点和 Music 完整界面尚未真实验证。以下保留旧版本的历史记录，其范围限制不代表 1.1.0 的当前行为。
 
 ### 1.0.2 已结束直播回放修复（2026-10-17）
 
@@ -128,8 +149,8 @@ Edge 155.0.4283.60 和 Chrome 155.0.8059.84，无账号、headless 独立临时�
 
 ## 已知限制
 
-- 仅处理 `https://www.youtube.com/watch?v=...` 的桌面普通视频，包含列表参数和从列表页进入的视频。纯列表页没有正在播放的视频，因此不设置。Shorts、嵌入页、其他域名 / 移动站点不处理。
-- 正在直播、待播 / 首播进行中仍跳过；已确认结束且可播放的直播回放按普通视频处理。缺少明确结束信息的直播内容会有限等待，无法确认时不自动设置。普通视频前贴广告等待结束，但广告或初始化超过等待额度后也会放弃。
+- 覆盖真正的 `youtube.com` 及其子域名；`youtu.be` 短链接跳转到 YouTube 后生效。移动站点、Music 等可能使用不同的播放器结构或缺少内部接口，域名覆盖不等于每种应用变体均已实测。
+- 无论视频类型，源视频必须实际提供 1080P 才能选择；缺少该档位时选择实际最高。待播页尚无媒体、纯音频或受限内容不能凭空生成 1080P。广告或初始化超出有限额度可能放弃；尚未开始播放的页面只有首次实际开播可补一次有限等待。
 - 网站内部接口、事件、广告标记、可用选项排序均可能变化；缺少接口、身份无法确认或空列表时只有限等待，不尝试过时 setter，也不反复操作菜单。未来新标识的最高档判断依赖播放器返回顺序。
 - 原生选项匹配依赖当前画质数据和菜单标签结构；无法安全匹配时退回 range 接口，菜单勾选的后续同步由播放器处理，不通过第二次写入或反复打开菜单补救。
 - 不保证解码帧始终为目标尺寸，无法保证内部方法永不静默失败。首次写入没有确认或抛异常也不重试；这是优先保护用户手动选择的取舍。

@@ -2,6 +2,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const path = require('node:path');
+const { readFileSync } = require('node:fs');
 
 // Offline browser fixtures: these prove controller behavior, not YouTube API support.
 const script = path.join(__dirname, '..', 'youtube-default-quality.user.js');
@@ -11,17 +12,24 @@ let browser;
 before(async () => { browser = await chromium.launch({ channel: process.env.X_UI_BROWSER || 'msedge', headless: true }); });
 after(async () => { await browser?.close(); });
 
+test('userscript metadata covers YouTube hosts and iframe execution', () => {
+    const source = readFileSync(script, 'utf8');
+    assert.match(source, /@match\s+\*:\/\/youtube\.com\/\*/);
+    assert.match(source, /@match\s+\*:\/\/\*\.youtube\.com\/\*/);
+    assert.doesNotMatch(source, /@noframes/);
+});
+
 async function setup(options = {}) {
     const context = await browser.newContext();
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.clock.install();
-    await page.route('https://www.youtube.com/**', route => route.fulfill({
+    await page.route('**/*', route => route.fulfill({
         contentType: 'text/html',
-        body: '<div id="movie_player"><video></video><button class="ytp-settings-button">Settings</button><div class="ytp-settings-menu"><div class="ytp-quality-menu"><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 Premium</span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 <sup>HD</sup></span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">480p</span></button><button role="menuitemradio" aria-checked="true"><span class="ytp-menuitem-label">Auto</span></button></div></div></div>',
+        body: '<div id="movie_player" data-test-player><video></video><button class="ytp-settings-button">Settings</button><div class="ytp-settings-menu"><div class="ytp-quality-menu"><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 Premium</span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 <sup>HD</sup></span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">480p</span></button><button role="menuitemradio" aria-checked="true"><span class="ytp-menuitem-label">Auto</span></button></div></div></div>',
     }));
-    await page.goto(`https://www.youtube.com/watch?v=${A}`);
+    await page.goto(`${options.origin || 'https://www.youtube.com'}${options.route || `/watch?v=${A}`}`);
     await page.evaluate(({ A, options }) => {
         window.model = { id: A, responseId: A, levels: ['hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'auto'], ...options };
         window.writes = [];
@@ -41,7 +49,7 @@ async function setup(options = {}) {
             });
         }
         window.installPlayer = (replace = false) => {
-            let p = document.getElementById('movie_player');
+            let p = document.querySelector('[data-test-player]');
             if (replace) { const next = p.cloneNode(true); p.replaceWith(next); p = next; }
             const bus = new Map();
             window.buses.push(bus);
@@ -65,6 +73,7 @@ async function setup(options = {}) {
             };
             p.getPreferredQuality = () => model.preferred || 'auto';
             p.getPlaybackQuality = () => model.playback || 'unknown';
+            p.getPlayerState = () => model.state ?? -1;
             if (model.nativeMenu) p.getAvailableQualityData = () => [
                 { quality: 'hd1080', qualityLabel: '1080p60 Premium', paygatedQualityDetails: {} },
                 { quality: 'hd1080', qualityLabel: '1080p60', isPlayable: true },
@@ -79,6 +88,8 @@ async function setup(options = {}) {
                 if (model.setterThrows) throw new Error('changed then threw');
             };
             if (model.missingSetter) delete p.setPlaybackQualityRange;
+            if (model.noResponseApi) delete p.getPlayerResponse;
+            if (model.playerId) { p.id = model.playerId; p.classList.add('html5-video-player'); }
         };
         if (!model.notReady) installPlayer();
         window.signal = name => document.dispatchEvent(new Event(name));
@@ -347,7 +358,7 @@ test('readiness getter exceptions recover; setter errors and no acknowledgement 
     }
 });
 
-test('ads defer selection until content; live and premieres are excluded', async () => {
+test('ads defer selection until content; live and premieres share the quality policy', async () => {
     const { page, context } = await setup({ isAd: true });
     try {
         await page.clock.runFor(4_000);
@@ -361,7 +372,7 @@ test('ads defer selection until content; live and premieres are excluded', async
     } finally { await context.close(); }
     for (const option of [{ live: true }, { upcoming: true }, { liveStreamability: true }]) {
         const fixture = await setup(option);
-        try { await signals(fixture.page); assert.deepEqual(await writes(fixture.page), []); }
+        try { await signals(fixture.page); assert.equal((await writes(fixture.page)).length, 1); }
         finally { await fixture.context.close(); }
     }
 });
@@ -369,12 +380,12 @@ test('ads defer selection until content; live and premieres are excluded', async
 for (const [name, options, shouldApply] of [
     ['ended replay with isLiveContent flag', { live: true, broadcast: { isLiveNow: false, endTimestamp: '2026-10-17T01:00:05+00:00' } }, true],
     ['ended replay retaining liveStreamability', { live: true, liveStreamability: true, broadcast: { isLiveNow: false, endTimestamp: '2026-10-17T01:00:05+00:00' } }, true],
-    ['unconfirmed live-content state without end timestamp', { live: true, broadcast: { isLiveNow: false } }, false],
-    ['current isLive flag overrides stale end metadata', { live: true, isLive: true, broadcast: { endTimestamp: '2026-10-17T01:00:05+00:00' } }, false],
-    ['isLiveNow overrides stale end metadata', { live: true, broadcast: { isLiveNow: true, endTimestamp: '2026-10-17T01:00:05+00:00' } }, false],
-    ['upcoming flag overrides stale end metadata', { live: true, upcoming: true, broadcast: { endTimestamp: '2026-10-17T01:00:05+00:00' } }, false],
-    ['active-live flag without isLiveContent', { isLive: true }, false],
-    ['offline live stream', { playabilityStatus: 'LIVE_STREAM_OFFLINE' }, false],
+    ['live content needs no end timestamp', { live: true, broadcast: { isLiveNow: false } }, true],
+    ['active live with end metadata', { live: true, isLive: true, broadcast: { endTimestamp: '2026-10-17T01:00:05+00:00' } }, true],
+    ['active live by isLiveNow', { live: true, broadcast: { isLiveNow: true, endTimestamp: '2026-10-17T01:00:05+00:00' } }, true],
+    ['upcoming with usable quality options', { live: true, upcoming: true, broadcast: { endTimestamp: '2026-10-17T01:00:05+00:00' } }, true],
+    ['active-live flag without isLiveContent', { isLive: true }, true],
+    ['offline status does not blacklist usable quality options', { playabilityStatus: 'LIVE_STREAM_OFFLINE' }, true],
 ]) {
     test(`live classification: ${name}`, async () => {
         const { page, context } = await setup({ ...options, preferred: 'auto', playback: 'hd720' });
@@ -391,11 +402,11 @@ for (const [name, options, shouldApply] of [
     });
 }
 
-test('late replay end metadata is retried before applying the default once', async () => {
+test('replay metadata is not required before applying the default once', async () => {
     const { page, context } = await setup({ live: true, preferred: 'auto', playback: 'hd720' });
     try {
         await page.clock.runFor(2_000);
-        assert.deepEqual(await writes(page), []);
+        assert.equal((await writes(page)).length, 1);
         await page.evaluate(() => { model.broadcast = { isLiveNow: false, endTimestamp: '2026-10-17T01:00:05+00:00' }; });
         await page.clock.runFor(2_001);
         assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
@@ -404,19 +415,112 @@ test('late replay end metadata is retried before applying the default once', asy
     } finally { await context.close(); }
 });
 
-test('leaving watch releases state; Shorts/embed/playlist pages do not receive writes', async () => {
-    const { page, context } = await setup({ levels: [] });
+for (const route of [`/shorts/${A}`, `/live/${A}`, `/embed/${A}`, `/v/${A}`, '/playlist?list=PLtest', '/']) {
+    test(`all YouTube routes apply the same policy: ${route}`, async () => {
+        const { page, context } = await setup({ route, playerId: route.includes('shorts') ? 'shorts-player' : 'movie_player' });
+        try {
+            assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
+        } finally { await context.close(); }
+    });
+}
+
+for (const origin of ['https://youtube.com', 'http://www.youtube.com', 'https://m.youtube.com', 'https://music.youtube.com']) {
+    test(`YouTube host coverage: ${origin}`, async () => {
+        const { page, context } = await setup({ origin });
+        try { assert.equal((await writes(page)).length, 1); }
+        finally { await context.close(); }
+    });
+}
+
+for (const origin of ['https://youtube.com.example.org', 'https://notyoutube.com']) {
+    test(`unrelated host is not a YouTube domain: ${origin}`, async () => {
+        const { page, context } = await setup({ origin });
+        try { assert.deepEqual(await writes(page), []); }
+        finally { await context.close(); }
+    });
+}
+
+test('embedded player may expose identity without the internal response API', async () => {
+    const { page, context } = await setup({ route: `/embed/${A}`, noResponseApi: true });
+    try { assert.equal((await writes(page)).length, 1); }
+    finally { await context.close(); }
+});
+
+test('a waiting premiere can start after the bounded readiness window expires', async () => {
+    const { page, context } = await setup({ upcoming: true, levels: [] });
     try {
-        for (const route of [`/shorts/${A}`, `/embed/${A}`, '/playlist?list=PLtest', '/']) {
-            await page.evaluate(route => { history.pushState({}, '', route); model.levels = ['hd1080']; signal('yt-navigate-finish'); }, route);
-            await page.clock.runFor(2_001);
-        }
+        await page.clock.runFor(60_000);
         assert.deepEqual(await writes(page), []);
-        await page.evaluate(id => navigate(id), A);
+        await page.evaluate(() => {
+            model.levels = ['hd1080', 'hd720'];
+            model.state = 1;
+            document.querySelector('video').dispatchEvent(new Event('playing'));
+        });
         await page.clock.runFor(1);
+        assert.equal((await writes(page)).length, 1);
+        await page.evaluate(() => { model.preferred = 'large'; });
+        await signals(page);
+        assert.equal((await writes(page)).length, 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'large');
+    } finally { await context.close(); }
+});
+
+test('Shorts chooses the visible player rather than an offscreen duplicate with the same ID', async () => {
+    const { page, context } = await setup({ route: `/shorts/${A}`, playerId: 'shorts-player', levels: [] });
+    try {
+        await page.evaluate(() => {
+            const current = document.getElementById('shorts-player');
+            const offscreen = document.createElement('div');
+            offscreen.id = 'movie_player';
+            offscreen.style.cssText = 'position:fixed;top:-10000px;width:100px;height:100px';
+            offscreen.getVideoData = () => ({ video_id: model.id });
+            offscreen.getPlayerResponse = () => ({ videoDetails: { videoId: model.id } });
+            offscreen.getAvailableQualityLevels = () => ['hd1080'];
+            offscreen.setPlaybackQualityRange = () => { throw new Error('wrong player selected'); };
+            current.before(offscreen);
+            model.levels = ['hd1080'];
+        });
+        await page.clock.runFor(2_001);
         assert.equal((await writes(page)).length, 1);
     } finally { await context.close(); }
 });
+
+test('a late player on a route without a video ID is discovered without persistent polling', async () => {
+    const { page, context } = await setup({ route: '/', notReady: true });
+    try {
+        await page.clock.runFor(12_000);
+        assert.deepEqual(await writes(page), []);
+        await page.evaluate(() => installPlayer());
+        await page.clock.runFor(2_001);
+        assert.equal((await writes(page)).length, 1);
+        await signals(page);
+        assert.equal((await writes(page)).length, 1);
+    } finally { await context.close(); }
+});
+
+for (const pending of [false, true]) {
+    test(`routeless player rebuild retains the visit lock (pending=${pending})`, async () => {
+        const { page, context } = await setup({ route: '/@channel/live', ...(pending ? { levels: [] } : {}) });
+        try {
+            await page.evaluate(() => {
+                window.detached = document.querySelector('[data-test-player]');
+                detached.remove();
+                model.preferred = 'large';
+                signal('yt-player-updated');
+            });
+            await page.clock.runFor(3_000);
+            await page.evaluate(() => {
+                document.body.append(detached);
+                model.levels = ['hd1080'];
+                installPlayer(true);
+                signal('yt-player-updated');
+            });
+            await page.clock.runFor(2_001);
+            assert.equal((await writes(page)).length, 1);
+            assert.equal(await page.evaluate(() => model.preferred), pending ? 'hd1080' : 'large');
+        } finally { await context.close(); }
+    });
+}
 
 test('duplicate injection and repeated navigation signals do not duplicate listeners or writes', async () => {
     const { page, context } = await setup({ levels: [] });

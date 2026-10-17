@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         YouTube Default Quality (1080p once per video)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.2
+// @version      1.1.0
 // @description  新视频优先 1080P，否则选实际最高画质；仅设置一次，随后尊重用户选择。
-// @match        https://www.youtube.com/*
+// @match        *://youtube.com/*
+// @match        *://*.youtube.com/*
 // @run-at       document-start
 // @grant        none
 // @sandbox      raw
-// @noframes
 // @license      MIT
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
 // @supportURL   https://github.com/hmxxgit/browser_javascript_backup/issues
@@ -15,6 +15,8 @@
 
 (() => {
     'use strict';
+
+    if (location.hostname !== 'youtube.com' && !location.hostname.endsWith('.youtube.com')) return;
 
     // @sandbox raw / @grant none: access the desktop player's page-world methods.
     // Do not use setPlaybackQuality(): it is a no-op in the inspected player.
@@ -25,16 +27,46 @@
     const WAIT_MS = 45_000;
     const MAX_PROBES = 30;
     const PLAYER_EVENTS = ['onReady', 'onStateChange', 'onPlaybackQualityChange', 'videodatachange'];
+    const PLAYER_SELECTOR = '#movie_player, #shorts-player, .html5-video-player';
     let session = null;
     let player = null;
     let timer = null;
     let navigating = false;
 
-    function watchId() {
+    function urlVideoId() {
         const url = new URL(location.href);
-        const id = url.searchParams.get('v');
-        // Deliberately exclude Shorts, embeds, previews and a bare /playlist page.
-        return url.pathname === '/watch' && /^[\w-]{11}$/.test(id || '') ? id : null;
+        const id = url.pathname === '/watch' ? url.searchParams.get('v') :
+            /^\/(?:shorts|live|embed|v)\/([\w-]{11})(?:\/|$)/.exec(url.pathname)?.[1];
+        return /^[\w-]{11}$/.test(id || '') ? id : null;
+    }
+
+    function playerVideoId(candidate) {
+        try {
+            const data = candidate?.getVideoData?.();
+            const id = data?.video_id || data?.videoId;
+            return /^[\w-]{11}$/.test(id || '') ? id : null;
+        } catch { return null; }
+    }
+
+    function findPlayer() {
+        let candidates = [...document.querySelectorAll(PLAYER_SELECTOR)];
+        const expected = urlVideoId();
+        if (expected) {
+            const matching = candidates.filter(candidate => playerVideoId(candidate) === expected);
+            if (matching.length) candidates = matching;
+        }
+        // Shorts can keep off-screen players around. Prefer the visible player
+        // that is actually playing; URL identity still guards stale/preloaded IDs.
+        const visible = candidates.filter(candidate => {
+            const rect = candidate.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 &&
+                rect.top < innerHeight && rect.left < innerWidth && getComputedStyle(candidate).visibility !== 'hidden';
+        });
+        return visible.find(candidate => {
+            const video = candidate.querySelector('video');
+            return video && !video.paused;
+        }) || visible.find(candidate => typeof candidate.getVideoData === 'function') ||
+            visible[0] || (candidates.length === 1 ? candidates[0] : null);
     }
 
     function cancelTimer() {
@@ -71,15 +103,21 @@
         }, Math.max(0, Math.min(delay, state.deadline - Date.now())));
     }
 
-    // One state per consecutive watch visit, not a permanent map of all viewed IDs.
+    // One state per consecutive active video, not a permanent map of viewed IDs.
     // A -> B -> A runs again; seek, replay, fullscreen and URL parameters keep A locked.
     function refresh() {
-        const id = watchId();
-        if (id !== session?.id) {
+        const candidate = findPlayer();
+        // Channel/home players can disappear briefly during rebuilding. Retain
+        // the same visit's lock until a different ID or page is observed.
+        const id = urlVideoId() || playerVideoId(candidate) ||
+            (session?.bootstrapUrl === location.href ? session.id : null);
+        if (!session || id !== session.id || (!id && session.bootstrapUrl !== location.href)) {
             cancelTimer();
-            session = id ? { id, phase: 'waiting', probes: 0, deadline: Date.now() + WAIT_MS } : null;
+            // A null-ID bootstrap also has a bound: discover delayed players on
+            // channel/playlist/home pages without requiring a /watch URL first.
+            session = { id, phase: 'waiting', probes: 0, deadline: Date.now() + WAIT_MS,
+                bootstrapUrl: location.href, playbackStarted: false };
         }
-        const candidate = id ? document.getElementById('movie_player') : null;
         // The initial element can exist before YouTube attaches its API. Do not bind
         // the DOM addEventListener and mistake it for the player's event bus.
         bindPlayer(typeof candidate?.getVideoData === 'function' ? candidate : null);
@@ -103,12 +141,14 @@
     }
 
     function matches(state, candidate) {
-        if (session !== state || state.phase !== 'waiting' || navigating || watchId() !== state.id ||
-            document.getElementById('movie_player') !== candidate || !candidate.isConnected) return false;
-        // URL alone is unsafe during SPA navigation: the old player may still be
-        // present. Require both player data and response to identify the new video.
-        return candidate.getVideoData()?.video_id === state.id &&
-            candidate.getPlayerResponse()?.videoDetails?.videoId === state.id;
+        const expected = urlVideoId();
+        if (session !== state || !state.id || state.phase !== 'waiting' || navigating ||
+            (expected && expected !== state.id) || findPlayer() !== candidate || !candidate.isConnected) return false;
+        // URL alone is unsafe during SPA navigation. Require player identity and
+        // also check response identity when exposed (not all embeds expose it).
+        const responseId = typeof candidate.getPlayerResponse === 'function' ?
+            candidate.getPlayerResponse()?.videoDetails?.videoId : null;
+        return playerVideoId(candidate) === state.id && (!responseId || responseId === state.id);
     }
 
     function nativeQualityOption(candidate, target) {
@@ -133,7 +173,9 @@
 
     function probe(state) {
         if (session !== state || state.phase !== 'waiting' || navigating) return;
-        if (watchId() !== state.id) { refresh(); return; }
+        const candidate = findPlayer();
+        const detectedId = urlVideoId() || playerVideoId(candidate);
+        if (detectedId && detectedId !== state.id) { refresh(); return; }
         if (Date.now() >= state.deadline || state.probes >= MAX_PROBES) {
             finish(state, 'expired');
             console.warn('[YouTube Default Quality] 等待播放器超时，本视频不再自动设置。');
@@ -141,35 +183,17 @@
         }
         state.probes += 1;
         const retryDelay = Math.min(500 * (2 ** (state.probes - 1)), 2_000);
-        const candidate = document.getElementById('movie_player');
         bindPlayer(typeof candidate?.getVideoData === 'function' ? candidate : null);
         try {
             if (typeof candidate?.getVideoData === 'function' &&
-                typeof candidate.getPlayerResponse === 'function' &&
                 typeof candidate.getAvailableQualityLevels === 'function' &&
                 typeof candidate.setPlaybackQualityRange === 'function' &&
                 matches(state, candidate) &&
                 !candidate.classList.contains('ad-showing') &&
                 !candidate.classList.contains('ad-interrupting') &&
                 !candidate.getVideoData()?.isAd) {
-                const response = candidate.getPlayerResponse();
-                // isLiveContent remains true after a stream becomes an archive.
-                // Require explicit end metadata to allow a live-content replay;
-                // current-live/upcoming flags still take precedence if conflicting.
-                const details = response.videoDetails;
-                const broadcast = response.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
-                const endedReplay = typeof broadcast?.endTimestamp === 'string' && broadcast.endTimestamp.trim() !== '';
-                if (details.isUpcoming || details.isLive || broadcast?.isLiveNow === true ||
-                    response.playabilityStatus?.status === 'LIVE_STREAM_OFFLINE') {
-                    finish(state, 'unsupported');
-                    return;
-                }
-                if ((details.isLiveContent || response.playabilityStatus?.liveStreamability) && !endedReplay) {
-                    // Replay metadata can arrive after videoDetails during SPA
-                    // initialization. Do not permanently skip on this flag alone.
-                    schedule(state, retryDelay);
-                    return;
-                }
+                // One policy for every content type: live, premiere, replay,
+                // Shorts and embeds. Only actual quality availability matters.
                 const target = chooseQuality(candidate.getAvailableQualityLevels());
                 const option = target ? nativeQualityOption(candidate, target) : null;
                 if (target && matches(state, candidate)) {
@@ -208,11 +232,12 @@
 
     function yieldToUser(event) {
         if (!event.isTrusted || !(event.target instanceof Element)) return;
-        const option = event.target.closest('#movie_player .ytp-quality-menu [role="menuitemradio"]');
+        const option = event.target.closest('.ytp-quality-menu [role="menuitemradio"]');
         if (!option || option.getAttribute('aria-disabled') === 'true') return;
         if (event.type === 'keydown' && !['Enter', ' ', 'Spacebar'].includes(event.key)) return;
         if (event.type === 'pointerdown' && event.button !== 0) return;
         refresh();
+        if (!player?.contains(option)) return;
         // Opening Settings, viewing Auto (1080p), or moving keyboard focus is not
         // a manual quality choice. Only activating a quality option yields control.
         if (session?.phase === 'waiting') finish(session, 'manual');
@@ -236,7 +261,22 @@
     // including playlist/autoplay transitions. Terminal sessions never write again.
     for (const name of ['loadstart', 'loadedmetadata', 'canplay', 'playing']) {
         document.addEventListener(name, event => {
-            if (event.target instanceof HTMLVideoElement && event.target.closest('#movie_player')) refresh();
+            if (!(event.target instanceof HTMLVideoElement)) return;
+            refresh();
+            // A waiting room may have no quality options for hours. Its first
+            // actual playback gets one fresh bounded readiness window; manual or
+            // completed sessions are never unlocked, and replaying cannot loop it.
+            if (name === 'playing' && session?.id && !session.playbackStarted &&
+                player?.contains(event.target) && typeof player.getPlayerState === 'function' &&
+                player.getPlayerState() === 1) {
+                session.playbackStarted = true;
+                if (session.phase === 'expired') {
+                    session.phase = 'waiting';
+                    session.probes = 0;
+                    session.deadline = Date.now() + WAIT_MS;
+                    schedule(session, 0);
+                }
+            }
         }, true);
     }
     window.addEventListener('popstate', refresh);

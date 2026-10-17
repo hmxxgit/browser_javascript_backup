@@ -46,12 +46,12 @@
 **YouTube 使用要点**
 
 - 安装与更新使用上表的 `main` 分支链接；如曾安装测试分支版本，请从该链接覆盖安装，以便后续跟随正式版本更新。
-- 桌面版普通视频：有 1080P 就选 1080P，没有则选当前实际可用的最高画质；无需设置面板。
+- 覆盖 `youtube.com` 及其所有子域名，不按普通视频、直播、首播、回放、Shorts 或嵌入式播放器区分：有 1080P 就明确选择固定 1080P，无需设置面板。视频本身没有 1080P 时，只能选择实际可用的最高画质。
 - 即使当前是 **Auto（1080P）**，进入新视频时也会明确选择固定 1080P；当前解码分辨率相同不会跳过设置。
 - 每个视频至多执行一次画质选择，之后可用原生菜单改为 4K、480P 或自动；暂停、继续、拖动、全屏均不会重新设置。切换其他视频后重新生效，返回上一个视频也会重新应用默认策略。
 - 等待期间仅打开设置、查看画质或移动焦点不会取消默认设置；实际选择画质（包括 Auto）才交还控制权。
-- 播放器未就绪时有限等待，最多 45 秒 / 30 次检查；接口异常或没有确认成功时，不重复写入画质。超时后需要切换视频或刷新才会重新尝试。
-- 支持已确认结束的直播回放；正在直播、待播、Shorts 和嵌入式播放器不处理。直播结束标记尚未就绪时有限等待，状态无法确认则放弃。依赖 YouTube 非公开接口，网站更新可能失效。[技术说明、测试记录与限制](docs/youtube-default-quality.md)。
+- 播放器未就绪时有限等待，最多 45 秒 / 30 次检查；待播页面超时后，首次实际播放可获得一次新的有限等待额度。接口异常或没有确认成功时，不重复写入画质。
+- 1.1.0 已移除直播类型过滤，允许 YouTube iframe 中执行。真实 Edge / Chrome 验证涵盖正在直播、直播回放、Shorts 及嵌入式播放器；其他子域名仅验证匹配和模拟状态机，不代表所有站点变体均已实测。依赖 YouTube 非公开接口，网站更新可能失效。[技术说明、测试记录与限制](docs/youtube-default-quality.md)。
 
 **未生效或布局异常？** 先刷新页面，确认脚本已启用；同一网站只保留一个同类布局脚本。仍有问题，可 [提交反馈](https://github.com/hmxxgit/browser_javascript_backup/issues/new)，附上浏览器、脚本版本和截图。
 
@@ -87,6 +87,8 @@ YouTube 的可选联网检查单独运行：`node tests/youtube-default-quality.
 Auto（1080P）专项回归：`node tests/youtube-default-quality-auto.live.cjs`，使用 `X_UI_BROWSER=chrome` 可改用 Chrome，检查固定档位的原生勾选状态及之后手动选择 Auto 的保护。
 
 直播回放回归：`YOUTUBE_TEST_VIDEO=Gt4_60l-mDc YOUTUBE_TEST_START_QUALITY=hd720 node tests/youtube-default-quality-auto.live.cjs`，检查反馈视频从 Auto（720P）改为固定 1080P，并验证全新页面的 document-start 加载。
+
+跨播放器场景回归：`node tests/youtube-default-quality-surfaces.live.cjs`，验证直播回放、正在直播、Shorts 与第三方页面中的 YouTube iframe；加 `X_UI_BROWSER=chrome` 使用 Chrome。
 
 X 界面精简思路参考 [Minimal Twitter](https://github.com/typefully/minimal-twitter) 和 [Control Panel for Twitter](https://github.com/insin/control-panel-for-twitter)；脚本独立实现，不引入外部运行时。
 
