@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Default Quality (1080p once per video)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.1
+// @version      1.0.2
 // @description  新视频优先 1080P，否则选实际最高画质；仅设置一次，随后尊重用户选择。
 // @match        https://www.youtube.com/*
 // @run-at       document-start
@@ -140,6 +140,7 @@
             return;
         }
         state.probes += 1;
+        const retryDelay = Math.min(500 * (2 ** (state.probes - 1)), 2_000);
         const candidate = document.getElementById('movie_player');
         bindPlayer(typeof candidate?.getVideoData === 'function' ? candidate : null);
         try {
@@ -152,10 +153,21 @@
                 !candidate.classList.contains('ad-interrupting') &&
                 !candidate.getVideoData()?.isAd) {
                 const response = candidate.getPlayerResponse();
-                // Live/premiere/ad behavior is not verified; leave those to YouTube.
-                if (response.videoDetails.isLiveContent || response.videoDetails.isUpcoming ||
-                    response.playabilityStatus?.liveStreamability) {
+                // isLiveContent remains true after a stream becomes an archive.
+                // Require explicit end metadata to allow a live-content replay;
+                // current-live/upcoming flags still take precedence if conflicting.
+                const details = response.videoDetails;
+                const broadcast = response.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
+                const endedReplay = typeof broadcast?.endTimestamp === 'string' && broadcast.endTimestamp.trim() !== '';
+                if (details.isUpcoming || details.isLive || broadcast?.isLiveNow === true ||
+                    response.playabilityStatus?.status === 'LIVE_STREAM_OFFLINE') {
                     finish(state, 'unsupported');
+                    return;
+                }
+                if ((details.isLiveContent || response.playabilityStatus?.liveStreamability) && !endedReplay) {
+                    // Replay metadata can arrive after videoDetails during SPA
+                    // initialization. Do not permanently skip on this flag alone.
+                    schedule(state, retryDelay);
                     return;
                 }
                 const target = chooseQuality(candidate.getAvailableQualityLevels());
@@ -191,7 +203,7 @@
                 return;
             }
         }
-        schedule(state, Math.min(500 * (2 ** (state.probes - 1)), 2_000));
+        schedule(state, retryDelay);
     }
 
     function yieldToUser(event) {

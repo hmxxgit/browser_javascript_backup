@@ -51,7 +51,7 @@
 - 每个视频至多执行一次画质选择，之后可用原生菜单改为 4K、480P 或自动；暂停、继续、拖动、全屏均不会重新设置。切换其他视频后重新生效，返回上一个视频也会重新应用默认策略。
 - 等待期间仅打开设置、查看画质或移动焦点不会取消默认设置；实际选择画质（包括 Auto）才交还控制权。
 - 播放器未就绪时有限等待，最多 45 秒 / 30 次检查；接口异常或没有确认成功时，不重复写入画质。超时后需要切换视频或刷新才会重新尝试。
-- 不处理 Shorts、直播、首播、嵌入式播放器；直播回放也保守跳过。依赖 YouTube 非公开接口，网站更新可能失效。[技术说明、测试记录与限制](docs/youtube-default-quality.md)。
+- 支持已确认结束的直播回放；正在直播、待播、Shorts 和嵌入式播放器不处理。直播结束标记尚未就绪时有限等待，状态无法确认则放弃。依赖 YouTube 非公开接口，网站更新可能失效。[技术说明、测试记录与限制](docs/youtube-default-quality.md)。
 
 **未生效或布局异常？** 先刷新页面，确认脚本已启用；同一网站只保留一个同类布局脚本。仍有问题，可 [提交反馈](https://github.com/hmxxgit/browser_javascript_backup/issues/new)，附上浏览器、脚本版本和截图。
 
@@ -85,6 +85,8 @@ node --check youtube-default-quality.user.js
 YouTube 的可选联网检查单独运行：`node tests/youtube-default-quality.live.cjs`，或 `X_UI_BROWSER=chrome node tests/youtube-default-quality.live.cjs`。它使用独立临时浏览器环境访问公开视频，不登录账号；不计入 `npm test`。
 
 Auto（1080P）专项回归：`node tests/youtube-default-quality-auto.live.cjs`，使用 `X_UI_BROWSER=chrome` 可改用 Chrome，检查固定档位的原生勾选状态及之后手动选择 Auto 的保护。
+
+直播回放回归：`YOUTUBE_TEST_VIDEO=Gt4_60l-mDc YOUTUBE_TEST_START_QUALITY=hd720 node tests/youtube-default-quality-auto.live.cjs`，检查反馈视频从 Auto（720P）改为固定 1080P，并验证全新页面的 document-start 加载。
 
 X 界面精简思路参考 [Minimal Twitter](https://github.com/typefully/minimal-twitter) 和 [Control Panel for Twitter](https://github.com/insin/control-panel-for-twitter)；脚本独立实现，不引入外部运行时。
 

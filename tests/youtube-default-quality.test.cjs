@@ -52,8 +52,9 @@ async function setup(options = {}) {
             p.removeEventListener = (name, fn) => bus.get(name)?.delete(fn);
             p.getVideoData = () => ({ video_id: model.id, isAd: model.isAd });
             p.getPlayerResponse = () => ({
-                videoDetails: { videoId: model.responseId, isLiveContent: model.live, isUpcoming: model.upcoming },
-                playabilityStatus: model.liveStreamability ? { liveStreamability: {} } : {},
+                videoDetails: { videoId: model.responseId, isLiveContent: model.live, isLive: model.isLive, isUpcoming: model.upcoming },
+                playabilityStatus: { status: model.playabilityStatus || 'OK', ...(model.liveStreamability ? { liveStreamability: {} } : {}) },
+                microformat: { playerMicroformatRenderer: { liveBroadcastDetails: model.broadcast } },
             });
             p.getAvailableQualityLevels = () => {
                 reads += 1;
@@ -363,6 +364,44 @@ test('ads defer selection until content; live and premieres are excluded', async
         try { await signals(fixture.page); assert.deepEqual(await writes(fixture.page), []); }
         finally { await fixture.context.close(); }
     }
+});
+
+for (const [name, options, shouldApply] of [
+    ['ended replay with isLiveContent flag', { live: true, broadcast: { isLiveNow: false, endTimestamp: '2026-10-17T01:00:05+00:00' } }, true],
+    ['ended replay retaining liveStreamability', { live: true, liveStreamability: true, broadcast: { isLiveNow: false, endTimestamp: '2026-10-17T01:00:05+00:00' } }, true],
+    ['unconfirmed live-content state without end timestamp', { live: true, broadcast: { isLiveNow: false } }, false],
+    ['current isLive flag overrides stale end metadata', { live: true, isLive: true, broadcast: { endTimestamp: '2026-10-17T01:00:05+00:00' } }, false],
+    ['isLiveNow overrides stale end metadata', { live: true, broadcast: { isLiveNow: true, endTimestamp: '2026-10-17T01:00:05+00:00' } }, false],
+    ['upcoming flag overrides stale end metadata', { live: true, upcoming: true, broadcast: { endTimestamp: '2026-10-17T01:00:05+00:00' } }, false],
+    ['active-live flag without isLiveContent', { isLive: true }, false],
+    ['offline live stream', { playabilityStatus: 'LIVE_STREAM_OFFLINE' }, false],
+]) {
+    test(`live classification: ${name}`, async () => {
+        const { page, context } = await setup({ ...options, preferred: 'auto', playback: 'hd720' });
+        try {
+            assert.equal((await writes(page)).length, shouldApply ? 1 : 0);
+            if (shouldApply) {
+                assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
+                await page.evaluate(() => { model.preferred = 'large'; playerSignal('onPlaybackQualityChange'); });
+            }
+            await signals(page);
+            assert.equal((await writes(page)).length, shouldApply ? 1 : 0);
+            if (shouldApply) assert.equal(await page.evaluate(() => model.preferred), 'large');
+        } finally { await context.close(); }
+    });
+}
+
+test('late replay end metadata is retried before applying the default once', async () => {
+    const { page, context } = await setup({ live: true, preferred: 'auto', playback: 'hd720' });
+    try {
+        await page.clock.runFor(2_000);
+        assert.deepEqual(await writes(page), []);
+        await page.evaluate(() => { model.broadcast = { isLiveNow: false, endTimestamp: '2026-10-17T01:00:05+00:00' }; });
+        await page.clock.runFor(2_001);
+        assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
+        await signals(page);
+        assert.equal((await writes(page)).length, 1);
+    } finally { await context.close(); }
 });
 
 test('leaving watch releases state; Shorts/embed/playlist pages do not receive writes', async () => {
