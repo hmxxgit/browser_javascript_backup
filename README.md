@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | ChatGPT Custom UI | 加宽正文、调整字体颜色；自动隐藏输入框；代码换行控制、算法图适应屏幕 | [一键安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/chatgpt-custom-ui.user.js) | [查看脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/chatgpt-custom-ui.user.js) |
 | X Custom UI | 加宽时间线、调整字体和照片高度；隐藏右栏、Grok、Premium；配置备份 | [一键安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/x-custom-ui.user.js) | [查看脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/x-custom-ui.user.js) |
-| YouTube Default Quality | 新视频优先 1080P，否则选可用最高画质；每个视频仅设置一次，保留手动选择 | [一键安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/youtube-default-quality.user.js) | [查看脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/youtube-default-quality.user.js) |
+| YouTube Default Quality | Tampermonkey 中配置首选画质，不足时向下匹配；每个视频仅设置一次，保留手动选择 | [一键安装](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/youtube-default-quality.user.js) | [查看脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/youtube-default-quality.user.js) |
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/)，点击上表的 **一键安装**。
 2. 在扩展页面点击 **安装**；已有脚本则点击 **更新**。
@@ -46,13 +46,18 @@
 **YouTube 使用要点**
 
 - 安装与更新使用上表的 `main` 分支链接；如曾安装测试分支版本，请从该链接覆盖安装，以便后续跟随正式版本更新。
-- 覆盖 `youtube.com` 及其所有子域名，不按普通视频、直播、首播、回放、Shorts 或嵌入式播放器区分：有 1080P 就明确选择固定 1080P，无需设置面板。视频本身没有 1080P 时，只能选择实际可用的最高画质。
-- 即使当前是 **Auto（1080P）**，进入新视频时也会明确选择固定 1080P；当前解码分辨率相同不会跳过设置。
+- 打开 YouTube 后，点击 **Tampermonkey → YouTube Default Quality (Configurable) → 设置首选清晰度…**。可选 8K、4K、1440P、1080P、720P、480P、360P、240P、144P，初始默认 1080P。
+- 优先选择设定档位；没有时选择**不高于首选的实际最高画质**。例如首选 4K，视频最高 1440P 就选择 1440P；首选 1440P，只有 4K / 1080P / 720P 时选择 1080P。没有可识别的向下选项时有限等待后不设置，不向上匹配。
+- **保存**：从下一个视频生效，当前视频保持用户选择；**保存并刷新**：保存后立即刷新，重新应用到当前视频。设置保存在 Tampermonkey，跨标签页和 YouTube 子域名共用，每次新视频读取。
+- 覆盖 `youtube.com` 及其所有子域名，不按普通视频、直播、首播、回放、Shorts 或嵌入式播放器区分。
+- 即使 Auto 恰好达到目标清晰度，新视频仍明确选择固定档位；当前解码分辨率相同不会跳过设置。
 - 每个视频至多执行一次画质选择，之后可用原生菜单改为 4K、480P 或自动；暂停、继续、拖动、全屏均不会重新设置。切换其他视频后重新生效，返回上一个视频也会重新应用默认策略。
-- **刷新同一个视频页面也会重新选择固定 1080P**：手动选择仅保留到本次页面访问结束，不跨刷新保存。
+- **刷新同一个视频页面也会重新按已保存的首选画质选择**：手动选择仅保留到本次页面访问结束，不跨刷新保存。
 - 等待期间仅打开设置、查看画质或移动焦点不会取消默认设置；实际选择画质（包括 Auto）才交还控制权。
 - 播放器未就绪时有限等待，最多 45 秒 / 30 次检查；待播页面超时后，首次实际播放可获得一次新的有限等待额度。接口异常或没有确认成功时，不重复写入画质。
 - 1.1.0 已移除直播类型过滤，允许 YouTube iframe 中执行。真实 Edge / Chrome 验证涵盖正在直播、直播回放、Shorts 及嵌入式播放器；其他子域名仅验证匹配和模拟状态机，不代表所有站点变体均已实测。依赖 YouTube 非公开接口，网站更新可能失效。[技术说明、测试记录与限制](docs/youtube-default-quality.md)。
+
+从旧版升级后请允许 Tampermonkey 新增的菜单、存储与页面访问权限并刷新。新版脚本名称不再带固定的 1080P；若手动安装产生新旧两个条目，请停用旧版，只保留新版。
 
 **未生效或布局异常？** 先刷新页面，确认脚本已启用；同一网站只保留一个同类布局脚本。仍有问题，可 [提交反馈](https://github.com/hmxxgit/browser_javascript_backup/issues/new)，附上浏览器、脚本版本和截图。
 
@@ -90,6 +95,8 @@ Auto（1080P）专项回归：`node tests/youtube-default-quality-auto.live.cjs`
 直播回放回归：`YOUTUBE_TEST_VIDEO=Gt4_60l-mDc YOUTUBE_TEST_START_QUALITY=hd720 node tests/youtube-default-quality-auto.live.cjs`，检查反馈视频从 Auto（720P）改为固定 1080P，并验证全新页面的 document-start 加载。
 
 跨播放器场景回归：`node tests/youtube-default-quality-surfaces.live.cjs`，验证直播回放、正在直播、Shorts 与第三方页面中的 YouTube iframe；加 `X_UI_BROWSER=chrome` 使用 Chrome。
+
+实际 Tampermonkey 配置流程：`TM_EXTENSION_PATH='/absolute/path/to/unpacked/Tampermonkey' node tests/youtube-default-quality-settings.live.cjs`。在独立临时 Edge 配置中安装脚本，验证真实菜单、GM 存储、4K / 720P 与 8K 向下降级；扩展目录仅作读取，不使用日常浏览器资料。
 
 同视频刷新回归：`node tests/youtube-default-quality-reload.live.cjs`，手动选择 480P / Auto 后刷新同一地址，检查恢复固定 1080P；加 `X_UI_BROWSER=chrome` 使用 Chrome。
 

@@ -17,6 +17,10 @@ test('userscript metadata covers YouTube hosts and iframe execution', () => {
     assert.match(source, /@match\s+\*:\/\/youtube\.com\/\*/);
     assert.match(source, /@match\s+\*:\/\/\*\.youtube\.com\/\*/);
     assert.doesNotMatch(source, /@noframes/);
+    for (const grant of ['GM_getValue', 'GM_setValue', 'GM_registerMenuCommand', 'unsafeWindow']) {
+        assert.match(source, new RegExp(`@grant\\s+${grant}`));
+    }
+    assert.doesNotMatch(source, /@grant\s+none/);
 });
 
 async function setup(options = {}) {
@@ -27,11 +31,23 @@ async function setup(options = {}) {
     await page.clock.install();
     await page.route('**/*', route => route.fulfill({
         contentType: 'text/html',
+        ...(options.trustedTypes ? { headers: { 'Content-Security-Policy': "require-trusted-types-for 'script'" } } : {}),
         body: '<div id="movie_player" data-test-player><video></video><button class="ytp-settings-button">Settings</button><div class="ytp-settings-menu"><div class="ytp-quality-menu"><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 Premium</span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 <sup>HD</sup></span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">480p</span></button><button role="menuitemradio" aria-checked="true"><span class="ytp-menuitem-label">Auto</span></button></div></div></div>',
     }));
     await page.goto(`${options.origin || 'https://www.youtube.com'}${options.route || `/watch?v=${A}`}`);
     await page.evaluate(({ A, options }) => {
         window.model = { id: A, responseId: A, levels: ['hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'auto'], ...options };
+        window.gmValues = { 'youtube-default-quality.preferred-height': options.preferredHeight ?? 1080 };
+        window.gmMenus = new Map();
+        window.GM_getValue = (key, fallback) => {
+            if (model.storageReadThrows) throw new Error('storage unavailable');
+            return key in gmValues ? gmValues[key] : fallback;
+        };
+        window.GM_setValue = (key, value) => {
+            if (model.storageWriteThrows) throw new Error('storage unavailable');
+            gmValues[key] = value;
+        };
+        window.GM_registerMenuCommand = (name, callback) => gmMenus.set(name, callback);
         window.writes = [];
         window.reads = 0;
         window.oldSetterCalls = 0;
@@ -104,7 +120,8 @@ async function setup(options = {}) {
             signal(event);
         };
     }, { A, options });
-    await page.addScriptTag({ path: script });
+    if (options.trustedTypes) await page.evaluate(readFileSync(script, 'utf8'));
+    else await page.addScriptTag({ path: script });
     await page.clock.runFor(1);
     return { page, context, errors };
 }
@@ -127,10 +144,10 @@ for (const [name, levels, expected] of [
     ['1080p preferred to 1440p and 4K', ['hd2160', 'hd1440', 'hd1080', 'hd720', 'auto'], 'hd1080'],
     ['720p maximum', ['hd720', 'large', 'medium', 'auto'], 'hd720'],
     ['480p and 360p', ['large', 'medium', 'auto'], 'large'],
-    ['no 1080p but higher qualities exist', ['hd2160', 'hd1440', 'hd720', 'auto'], 'hd2160'],
+    ['missing 1080p falls downward even when higher qualities exist', ['hd2160', 'hd1440', 'hd720', 'auto'], 'hd720'],
     ['rank only actual options even if unsorted', ['medium', 'hd720', 'large', 'auto'], 'hd720'],
-    ['unlisted future resolution', ['hd5760', 'hd2160', 'auto'], 'hd5760'],
-    ['opaque future option retains player ordering', ['futureHighest', 'hd720', 'auto'], 'futureHighest'],
+    ['future resolution above the ceiling is excluded', ['hd5760', 'hd720', 'auto'], 'hd720'],
+    ['opaque future option does not bypass the ceiling', ['futureHighest', 'hd720', 'auto'], 'hd720'],
     ['auto excluded and duplicate levels accepted', ['auto', 'large', 'large', 'medium'], 'large'],
 ]) {
     test(name, async () => {
@@ -572,5 +589,155 @@ test('committed URL changes are detected without any YouTube or media events', a
         }, A);
         await page.clock.runFor(1);
         assert.deepEqual((await writes(page)).map(w => w.id), [A, B, A]);
+    } finally { await context.close(); }
+});
+
+for (const [preferredHeight, levels, expected] of [
+    [2160, ['hd4320', 'hd2160', 'hd1440', 'hd1080'], 'hd2160'],
+    [2160, ['hd4320', 'hd1440', 'hd1080'], 'hd1440'],
+    [1440, ['hd2160', 'hd1080', 'hd720'], 'hd1080'],
+    [720, ['hd2160', 'hd1080', 'hd720', 'large'], 'hd720'],
+    [720, ['hd1080', 'large', 'medium'], 'large'],
+    [480, ['hd1080', 'large', 'medium'], 'large'],
+    [360, ['large', 'medium', 'small'], 'medium'],
+    [240, ['medium', 'small', 'tiny'], 'small'],
+    [144, ['small', 'tiny'], 'tiny'],
+    [4320, ['hd5760', 'hd2880', 'hd2160'], 'hd2880'],
+]) {
+    test(`saved preference ${preferredHeight} selects ${expected} without exceeding the ceiling`, async () => {
+        const { page, context } = await setup({ preferredHeight, levels });
+        try { assert.deepEqual(await writes(page), [{ id: A, min: expected, max: expected }]); }
+        finally { await context.close(); }
+    });
+}
+
+test('no known option below the ceiling waits finitely without selecting higher or Auto', async () => {
+    const { page, context } = await setup({ preferredHeight: 720, levels: ['hd2160', 'hd1080', 'futureUnknown', 'auto'] });
+    try {
+        await signals(page);
+        assert.deepEqual(await writes(page), []);
+        assert.ok(await page.evaluate(() => reads) <= 30);
+    } finally { await context.close(); }
+});
+
+for (const options of [{ preferredHeight: '2160' }, { preferredHeight: 9999 }, { storageReadThrows: true }]) {
+    test(`invalid or unavailable saved preference defaults to 1080p: ${JSON.stringify(options)}`, async () => {
+        const { page, context } = await setup(options);
+        try { assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]); }
+        finally { await context.close(); }
+    });
+}
+
+async function openConfig(page) {
+    await page.evaluate(() => gmMenus.get('设置首选清晰度…')());
+    return page.locator('#youtube-default-quality-config');
+}
+
+test('Tampermonkey menu opens one accessible configuration panel and close/Escape removes it', async () => {
+    const { page, context } = await setup();
+    try {
+        assert.equal(await page.evaluate(() => gmMenus.size), 1);
+        const panel = await openConfig(page);
+        assert.equal(await panel.getByLabel('首选清晰度').inputValue(), '1080');
+        assert.equal(await panel.locator('option').count(), 9);
+        await openConfig(page);
+        assert.equal(await page.locator('#youtube-default-quality-config').count(), 1);
+        await page.keyboard.press('Escape');
+        assert.equal(await panel.count(), 0);
+        await openConfig(page);
+        await panel.getByRole('button', { name: '关闭', exact: true }).click();
+        assert.equal(await panel.count(), 0);
+    } finally { await context.close(); }
+});
+
+test('saving a preference persists it for new visits and other-tab changes without overriding the current video', async () => {
+    const { page, context } = await setup();
+    try {
+        await page.evaluate(() => { model.preferred = 'large'; });
+        const panel = await openConfig(page);
+        await panel.getByLabel('首选清晰度').selectOption('2160');
+        await panel.getByRole('button', { name: '保存', exact: true }).click();
+        assert.equal(await page.evaluate(() => gmValues['youtube-default-quality.preferred-height']), 2160);
+        await panel.getByRole('button', { name: '关闭', exact: true }).click();
+        await signals(page);
+        assert.equal((await writes(page)).length, 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'large');
+        await page.evaluate(id => navigate(id), B);
+        await page.clock.runFor(1);
+        assert.equal((await writes(page)).at(-1).min, 'hd2160');
+        // GM storage is shared between tabs/domains; read it on every new visit.
+        await page.evaluate(id => { gmValues['youtube-default-quality.preferred-height'] = 720; navigate(id); }, A);
+        await page.clock.runFor(1);
+        assert.equal((await writes(page)).at(-1).min, 'hd720');
+        await openConfig(page);
+        assert.equal(await panel.getByLabel('首选清晰度').inputValue(), '720');
+    } finally { await context.close(); }
+});
+
+test('saving during initialization keeps this visit preference snapshot and manual protection', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        const panel = await openConfig(page);
+        await panel.getByLabel('首选清晰度').selectOption('720');
+        await panel.getByRole('button', { name: '保存', exact: true }).click();
+        await panel.getByRole('button', { name: '关闭', exact: true }).click();
+        await page.evaluate(() => { model.levels = ['hd1080', 'hd720']; });
+        await page.clock.runFor(2_001);
+        assert.equal((await writes(page)).at(-1).min, 'hd1080');
+    } finally { await context.close(); }
+});
+
+test('configuration storage failure is visible and closing without saving leaves defaults unchanged', async () => {
+    const { page, context } = await setup({ storageWriteThrows: true });
+    try {
+        const panel = await openConfig(page);
+        await panel.getByLabel('首选清晰度').selectOption('1440');
+        await panel.getByRole('button', { name: '保存', exact: true }).click();
+        assert.match(await panel.getByRole('status').innerText(), /保存失败/);
+        assert.equal(await page.evaluate(() => gmValues['youtube-default-quality.preferred-height']), 1080);
+        await panel.getByRole('button', { name: '关闭', exact: true }).click();
+        await openConfig(page);
+        assert.equal(await panel.getByLabel('首选清晰度').inputValue(), '1080');
+    } finally { await context.close(); }
+});
+
+test('save-and-reload persists the chosen height before reloading the same document URL', async () => {
+    const { page, context } = await setup();
+    try {
+        await page.evaluate(() => {
+            const original = GM_setValue;
+            window.GM_setValue = (key, value) => {
+                original(key, value);
+                sessionStorage.setItem('test-last-config-write', JSON.stringify({ key, value }));
+            };
+        });
+        const url = page.url();
+        const panel = await openConfig(page);
+        await panel.getByLabel('首选清晰度').selectOption('1440');
+        await Promise.all([
+            page.waitForEvent('domcontentloaded'),
+            panel.getByRole('button', { name: '保存并刷新', exact: true }).click(),
+        ]);
+        assert.equal(page.url(), url);
+        assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem('test-last-config-write'))), {
+            key: 'youtube-default-quality.preferred-height', value: 1440,
+        });
+        assert.equal(await page.evaluate(() => window.__youtubeDefaultQualityOnceV1__), undefined);
+    } finally { await context.close(); }
+});
+
+
+test('configuration opens and saves under YouTube-style Trusted Types enforcement', async () => {
+    const { page, context, errors } = await setup({ trustedTypes: true });
+    try {
+        assert.equal(await page.evaluate(() => {
+            try { document.createElement('div').innerHTML = '<b>blocked</b>'; return false; }
+            catch { return true; }
+        }), true);
+        const panel = await openConfig(page);
+        await panel.getByLabel('首选清晰度').selectOption('2160');
+        await panel.getByRole('button', { name: '保存', exact: true }).click();
+        assert.equal(await page.evaluate(() => gmValues['youtube-default-quality.preferred-height']), 2160);
+        assert.deepEqual(errors, []);
     } finally { await context.close(); }
 });

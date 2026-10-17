@@ -1,12 +1,15 @@
 // ==UserScript==
-// @name         YouTube Default Quality (1080p once per video)
+// @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.1.0
-// @description  新视频优先 1080P，否则选实际最高画质；仅设置一次，随后尊重用户选择。
+// @version      2.0.0
+// @description  可配置首选画质，不足时向下匹配；每个视频仅设置一次，随后尊重用户选择。
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
 // @run-at       document-start
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @sandbox      raw
 // @license      MIT
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -18,18 +21,107 @@
 
     if (location.hostname !== 'youtube.com' && !location.hostname.endsWith('.youtube.com')) return;
 
-    // @sandbox raw / @grant none: access the desktop player's page-world methods.
+    // Keep player calls in the page world even when GM permissions are enabled.
+    const window = typeof unsafeWindow === 'object' ? unsafeWindow : globalThis.window;
+    const document = window.document;
+    const Element = window.Element;
+    const HTMLVideoElement = window.HTMLVideoElement;
     // Do not use setPlaybackQuality(): it is a no-op in the inspected player.
     const INSTANCE = '__youtubeDefaultQualityOnceV1__';
     if (window[INSTANCE]) return;
     window[INSTANCE] = true;
+
+    const PREFERENCE_KEY = 'youtube-default-quality.preferred-height';
+    const QUALITY_CHOICES = [4320, 2160, 1440, 1080, 720, 480, 360, 240, 144];
+    const qualityLabel = height => ({ 4320: '8K（4320P）', 2160: '4K（2160P）' }[height] || `${height}P`);
+    function readPreference() {
+        try {
+            const height = typeof GM_getValue === 'function' ? GM_getValue(PREFERENCE_KEY, 1080) : 1080;
+            return QUALITY_CHOICES.includes(height) ? height : 1080;
+        } catch { return 1080; }
+    }
+
+    // Created only from the Tampermonkey menu; no persistent page button.
+    let configHost = null;
+    function openConfig() {
+        if (!document.body) { document.addEventListener('DOMContentLoaded', openConfig, { once: true }); return; }
+        if (configHost?.isConnected) { configHost.shadowRoot.querySelector('select').focus(); return; }
+        const previousFocus = document.activeElement;
+        configHost = document.createElement('div');
+        configHost.id = 'youtube-default-quality-config';
+        const host = configHost;
+        const shadow = configHost.attachShadow({ mode: 'open' });
+        // YouTube enforces Trusted Types: build DOM nodes rather than assigning
+        // HTML strings or creating a permissive policy on the site's behalf.
+        function element(tag, text, attributes = {}) {
+            const node = document.createElement(tag);
+            if (text) node.textContent = text;
+            for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+            return node;
+        }
+        const style = element('style');
+        style.textContent = `
+            :host{all:initial} dialog{box-sizing:border-box;width:min(440px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;border:1px solid #555;border-radius:16px;padding:24px;background:#202124;color:#f1f1f1;font:15px/1.6 system-ui,sans-serif;color-scheme:dark}
+            dialog::backdrop{background:#0009} h2{font-size:21px;margin:0 0 16px} label{display:block} select{width:100%;margin:8px 0;padding:9px;border:1px solid #777;border-radius:8px;font:inherit} p{color:#ccc;margin:12px 0} .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px} button{border:1px solid #777;border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer} button[type=submit]{background:#8ab4f8;color:#111;border-color:#8ab4f8} [role=status]{min-height:24px;color:#ffd580}
+        `;
+        const dialog = element('dialog', '', { 'aria-labelledby': 'title' });
+        const form = element('form');
+        const select = element('select', '', { id: 'quality', name: 'quality' });
+        const status = element('div', '', { role: 'status', 'aria-live': 'polite' });
+        const actions = element('div', '', { class: 'actions' });
+        actions.append(element('button', '保存', { type: 'submit' }),
+            element('button', '保存并刷新', { type: 'button', id: 'reload' }),
+            element('button', '关闭', { type: 'button', id: 'cancel' }));
+        form.append(element('h2', 'YouTube 默认画质', { id: 'title' }),
+            element('label', '首选清晰度', { for: 'quality' }), select,
+            element('p', '优先选择设定档位；没有时，向下选择实际可用的最高画质，不向上匹配。'),
+            element('p', '保存后从下一个视频或刷新后生效；当前视频的手动选择保持不变。'),
+            status, actions);
+        dialog.append(form);
+        shadow.append(style, dialog);
+        for (const height of QUALITY_CHOICES) {
+            const option = document.createElement('option');
+            option.value = String(height);
+            option.textContent = qualityLabel(height);
+            select.append(option);
+        }
+        select.value = String(readPreference());
+        function save(reload) {
+            const height = Number(select.value);
+            if (!QUALITY_CHOICES.includes(height)) { status.textContent = '请选择有效的清晰度。'; return; }
+            try {
+                if (typeof GM_setValue !== 'function') throw new Error('GM_setValue unavailable');
+                GM_setValue(PREFERENCE_KEY, height);
+                status.textContent = `已保存 ${qualityLabel(height)}，下一个视频或刷新后生效。`;
+                if (reload) window.location.reload();
+            } catch { status.textContent = '保存失败，请检查 Tampermonkey 权限后重试。'; }
+        }
+        shadow.querySelector('form').addEventListener('submit', event => { event.preventDefault(); save(false); });
+        shadow.querySelector('#reload').addEventListener('click', () => save(true));
+        function cleanup() {
+            if (!host.isConnected) return;
+            host.remove();
+            if (configHost === host) configHost = null;
+            if (previousFocus?.isConnected) previousFocus.focus();
+        }
+        function closeConfig() { dialog.close(); cleanup(); }
+        shadow.querySelector('#cancel').addEventListener('click', closeConfig);
+        dialog.addEventListener('cancel', event => { event.preventDefault(); closeConfig(); });
+        dialog.addEventListener('close', cleanup);
+        document.body.append(configHost);
+        dialog.showModal();
+        select.focus();
+    }
+    if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('设置首选清晰度…', openConfig, { accessKey: 'q', clickedFrame: true });
+    }
 
     const WAIT_MS = 45_000;
     const MAX_PROBES = 30;
     const PLAYER_EVENTS = ['onReady', 'onStateChange', 'onPlaybackQualityChange', 'videodatachange'];
     const PLAYER_SELECTOR = '#movie_player, #shorts-player, .html5-video-player';
     // Memory belongs to this document only. A full reload of the same video
-    // starts a fresh session and selects 1080p again, even after a manual choice.
+    // starts a fresh session using the saved preference, even after a manual choice.
     let session = null;
     let player = null;
     let timer = null;
@@ -118,7 +210,7 @@
             // A null-ID bootstrap also has a bound: discover delayed players on
             // channel/playlist/home pages without requiring a /watch URL first.
             session = { id, phase: 'waiting', probes: 0, deadline: Date.now() + WAIT_MS,
-                bootstrapUrl: location.href, playbackStarted: false };
+                bootstrapUrl: location.href, playbackStarted: false, preferredHeight: readPreference() };
         }
         // The initial element can exist before YouTube attaches its API. Do not bind
         // the DOM addEventListener and mistake it for the player's event bus.
@@ -126,20 +218,15 @@
         if (session) schedule(session, 0);
     }
 
-    function chooseQuality(levels) {
+    function chooseQuality(levels, preferredHeight) {
         if (!Array.isArray(levels)) return null;
-        const available = [...new Set(levels.filter(q => typeof q === 'string' && q && q !== 'auto'))];
-        if (available.includes('hd1080')) return 'hd1080';
-        // Only rank entries actually returned by this video. hdNNNN also handles
-        // future resolutions; do not filter availability through a fixed tier list.
-        const legacy = { tiny: 144, small: 240, medium: 360, large: 480, highres: Infinity };
+        const legacy = { tiny: 144, small: 240, medium: 360, large: 480 };
         const height = q => /^hd\d+$/.test(q) ? Number(q.slice(2)) : legacy[q];
-        if (available.every(q => height(q) !== undefined)) {
-            return available.reduce((best, q) => !best || height(q) > height(best) ? q : best, null);
-        }
-        // YouTube currently returns highest first. Preserve its ordering if a new
-        // opaque quality identifier cannot be ranked; never invent an option.
-        return available[0] || null;
+        // Rank actual options only. Unknown IDs cannot safely be placed below a
+        // user-selected ceiling, so do not guess or silently choose a higher tier.
+        const available = [...new Set(levels.filter(q => typeof q === 'string' &&
+            height(q) > 0 && height(q) <= preferredHeight))];
+        return available.reduce((best, q) => !best || height(q) > height(best) ? q : best, null);
     }
 
     function matches(state, candidate) {
@@ -196,7 +283,7 @@
                 !candidate.getVideoData()?.isAd) {
                 // One policy for every content type: live, premiere, replay,
                 // Shorts and embeds. Only actual quality availability matters.
-                const target = chooseQuality(candidate.getAvailableQualityLevels());
+                const target = chooseQuality(candidate.getAvailableQualityLevels(), state.preferredHeight);
                 const option = target ? nativeQualityOption(candidate, target) : null;
                 if (target && matches(state, candidate)) {
                     // Lock BEFORE calling: synchronous quality events, errors, or
