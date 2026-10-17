@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      2.1.0
-// @description  可配置首选画质，不足时向下匹配；每个视频仅设置一次，随后尊重用户选择。
+// @version      2.1.1
+// @description  可配置首选画质，不足时向下匹配；固定画质确认后不再干预，尊重用户手动选择。
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
 // @run-at       document-start
@@ -29,7 +29,13 @@
     // Do not use setPlaybackQuality(): it is a no-op in the inspected player.
     const INSTANCE = '__youtubeDefaultQualityOnceV1__';
     if (window[INSTANCE]) return;
-    window[INSTANCE] = true;
+    window[INSTANCE] = Object.freeze({
+        version: '2.1.1',
+        // Read-only troubleshooting snapshot; never exposes GM storage or controls.
+        get state() { return session ? { id: session.id, phase: session.phase,
+            probes: session.probes, nativeAttempts: session.nativeAttempts || 0,
+            menuPrepared: !!session.menuPrepared, navigating, timerPending: timer !== null } : null; },
+    });
 
     const PREFERENCE_KEY = 'youtube-default-quality.preferred-height';
     const QUALITY_CHOICES = [4320, 2160, 1440, 1080, 720, 480, 360, 240, 144];
@@ -262,7 +268,7 @@
     }
 
     // An internal range request can leave the native menu on Auto. Lazily build
-    // YouTube's OWN quality menu once, then select its actual fixed option. The
+    // YouTube's OWN quality menu, then select its actual fixed option. The
     // advanced-menu command was checked in the current player source and UI.
     function prepareNativeSelection(state, candidate, target) {
         const existing = nativeQualityOption(candidate, target);
@@ -348,25 +354,64 @@
                 !candidate.classList.contains('ad-showing') &&
                 !candidate.classList.contains('ad-interrupting') &&
                 !candidate.getVideoData()?.isAd) {
+                // The quality list and video ID can be ready BEFORE YouTube
+                // replaces its startup controller, which resets fixed quality to
+                // Auto. Wait for actual media readiness and a stable source first.
+                const video = candidate.querySelector('video.html5-main-video') || candidate.querySelector('video');
+                const playbackState = candidate.getPlayerState?.();
+                if (!video || video.readyState < 2 || ![1, 2].includes(playbackState)) {
+                    state.readyMedia = null;
+                    schedule(state, retryDelay); return;
+                }
+                const source = video.currentSrc;
+                if (!state.readyMedia || state.readyMedia.player !== candidate ||
+                    state.readyMedia.video !== video || state.readyMedia.source !== source) {
+                    state.readyMedia = { player: candidate, video, source, since: Date.now() };
+                }
+                if (Date.now() - state.readyMedia.since < 2_000) {
+                    schedule(state, Math.max(500, 2_000 - (Date.now() - state.readyMedia.since))); return;
+                }
                 // One policy for every content type: live, premiere, replay,
                 // Shorts and embeds. Only actual quality availability matters.
+                // A native click can run while YouTube is still replacing its
+                // content controller. Only an explicit Auto readback permits a
+                // bounded retry; success or a manual choice permanently ends it.
+                if (state.pendingNative) {
+                    const pending = state.pendingNative;
+                    if (Date.now() < pending.checkAt) {
+                        schedule(state, pending.checkAt - Date.now()); return;
+                    }
+                    const preference = candidate.getPreferredQuality?.();
+                    if (preference === pending.target) { finish(state, 'applied'); return; }
+                    if (preference !== 'auto' || state.nativeAttempts >= 3) {
+                        finish(state, 'attempted');
+                        console.warn('[YouTube Default Quality] 未确认固定画质；已停止有限尝试。');
+                        return;
+                    }
+                    state.pendingNative = null;
+                    state.menuPrepared = false;
+                }
                 const target = chooseQuality(candidate.getAvailableQualityLevels(), state.preferredHeight);
                 if (!target || !matches(state, candidate)) { schedule(state, retryDelay); return; }
                 const selection = prepareNativeSelection(state, candidate, target);
                 if (selection.waiting) { schedule(state, retryDelay); return; }
                 try {
                     if (!matches(state, candidate)) { schedule(state, retryDelay); return; }
-                    // Lock before the ONLY quality action. Native menu creation is
-                    // readiness work, not a successful quality setting.
+                    // Block synchronous player events during the action. A
+                    // failed native Auto selection may wait for confirmation;
+                    // range calls and thrown actions are never repeated.
                     finish(state, 'attempted');
-                    if (selection.option) selection.option.click();
-                    else candidate.setPlaybackQualityRange(target, target);
-                    // Preference acknowledgement is not proof that decoded frames
-                    // already have this resolution. Read only; never fight ABR.
-                    if (typeof candidate.getPreferredQuality === 'function' &&
-                        candidate.getPreferredQuality() === target &&
-                        (!selection.option || selection.option.getAttribute('aria-checked') === 'true')) {
+                    if (selection.option) {
+                        state.nativeAttempts = (state.nativeAttempts || 0) + 1;
+                        selection.option.click();
+                    } else candidate.setPlaybackQualityRange(target, target);
+                    const preference = candidate.getPreferredQuality?.();
+                    if (preference === target) {
                         state.phase = 'applied';
+                    } else if (selection.option && preference === 'auto') {
+                        state.phase = 'waiting';
+                        state.pendingNative = { target, checkAt: Date.now() + 1_000 };
+                        schedule(state, 1_000);
                     } else {
                         console.warn('[YouTube Default Quality] 已请求画质，未确认首选档位；不重复设置。');
                     }
@@ -416,6 +461,7 @@
     for (const name of ['loadstart', 'loadedmetadata', 'canplay', 'playing']) {
         document.addEventListener(name, event => {
             if (!(event.target instanceof HTMLVideoElement)) return;
+            if (name === 'loadstart' && session?.phase === 'waiting') session.readyMedia = null;
             refresh();
         }, true);
     }

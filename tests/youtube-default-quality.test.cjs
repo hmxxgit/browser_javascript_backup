@@ -36,7 +36,7 @@ async function setup(options = {}) {
     }));
     await page.goto(`${options.origin || 'https://www.youtube.com'}${options.route || `/watch?v=${A}`}`);
     await page.evaluate(({ A, options }) => {
-        window.model = { id: A, responseId: A, levels: ['hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'auto'], ...options };
+        window.model = { state: 1, id: A, responseId: A, levels: ['hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'auto'], ...options };
         window.gmValues = { 'youtube-default-quality.preferred-height': options.preferredHeight ?? 1080 };
         window.gmMenus = new Map();
         window.GM_getValue = (key, fallback) => {
@@ -52,6 +52,10 @@ async function setup(options = {}) {
         window.reads = 0;
         window.oldSetterCalls = 0;
         window.nativeActions = 0;
+        for (const video of document.querySelectorAll('video')) {
+            Object.defineProperty(video, 'readyState', { configurable: true, get: () => model.mediaReady ?? 4 });
+            Object.defineProperty(video, 'currentSrc', { configurable: true, get: () => model.mediaSource || 'blob:main' });
+        }
         window.settingsClicks = 0;
         window.buses = [];
         document.querySelector('.ytp-settings-button').addEventListener('click', event => {
@@ -66,7 +70,7 @@ async function setup(options = {}) {
             const quality = ['premium1080', 'hd1080', 'large', 'auto'][index];
             item.addEventListener('click', () => {
                 nativeActions += 1;
-                model.preferred = quality;
+                if (!model.nativeMisses || nativeActions > model.nativeMisses) model.preferred = quality;
                 writes.push({ id: model.id, min: quality, max: quality });
                 for (const radio of document.querySelectorAll('[role="menuitemradio"]')) radio.setAttribute('aria-checked', String(radio === item));
             });
@@ -79,6 +83,10 @@ async function setup(options = {}) {
         window.installPlayer = (replace = false) => {
             let p = document.querySelector('[data-test-player]');
             if (replace) { const next = p.cloneNode(true); p.replaceWith(next); p = next; }
+            for (const video of p.querySelectorAll('video')) {
+                Object.defineProperty(video, 'readyState', { configurable: true, get: () => model.mediaReady ?? 4 });
+                Object.defineProperty(video, 'currentSrc', { configurable: true, get: () => model.mediaSource || 'blob:main' });
+            }
             const bus = new Map();
             window.buses.push(bus);
             p.addEventListener = (name, fn) => {
@@ -148,7 +156,7 @@ async function setup(options = {}) {
     }, { A, options });
     if (options.trustedTypes) await page.evaluate(readFileSync(script, 'utf8'));
     else await page.addScriptTag({ path: script });
-    await page.clock.runFor(1);
+    await page.clock.runFor(2_501);
     return { page, context, errors };
 }
 
@@ -211,7 +219,7 @@ test('trusted quality option activation before readiness yields, including keybo
             await signals(page);
             assert.deepEqual(await writes(page), [{ id: A, min: 'large', max: 'large' }]);
             await page.evaluate(id => navigate(id), B);
-            await page.clock.runFor(1);
+            await page.clock.runFor(2_501);
             assert.equal((await writes(page)).length, 2);
         } finally { await context.close(); }
     }
@@ -223,7 +231,7 @@ test('viewing Settings or navigating quality options does not cancel pending aut
         await page.getByRole('button', { name: 'Settings', exact: true }).click();
         await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('ArrowUp');
         await page.evaluate(() => { model.levels = ['hd1080']; });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
     } finally { await context.close(); }
 });
@@ -234,9 +242,9 @@ for (const preferred of ['auto', 'hd1080']) {
         try {
             assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
             await page.evaluate(id => navigate(id), B);
-            await page.clock.runFor(1);
+            await page.clock.runFor(2_501);
             await page.evaluate(id => navigate(id), A);
-            await page.clock.runFor(1);
+            await page.clock.runFor(2_501);
             assert.deepEqual((await writes(page)).map(w => w.id), [A, B, A]);
             await signals(page);
             assert.equal((await writes(page)).length, 3);
@@ -252,7 +260,7 @@ for (const hidden of [false, true]) {
                 if (hidden) document.querySelector('.ytp-settings-menu').style.display = 'none';
                 model.levels = ['hd2160', 'hd1080', 'large'];
             }, hidden);
-            await page.clock.runFor(2_001);
+            await page.clock.runFor(4_001);
             assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
             assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
             assert.equal(await page.locator('[aria-checked="true"]').textContent(), '1080p60 HD');
@@ -278,11 +286,11 @@ test('recommendation/search SPA, playlist/autoplay, history and A-B-A each reset
     const { page, context } = await setup();
     try {
         await page.evaluate(id => navigate(id), B);
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         await page.evaluate(() => { history.back(); });
         await page.waitForURL(`**/watch?v=${A}`);
         await page.evaluate(id => { model.id = model.responseId = id; signal('yt-navigate-finish'); }, A);
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         // Simulate playlist/autoplay: no yt-navigate-start/finish, only media/player events.
         await page.evaluate(id => {
             history.pushState({}, '', `/watch?v=${id}&list=PLexample&index=2`);
@@ -290,7 +298,7 @@ test('recommendation/search SPA, playlist/autoplay, history and A-B-A each reset
             playerSignal('onStateChange');
             document.querySelector('video').dispatchEvent(new Event('loadedmetadata'));
         }, B);
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.deepEqual((await writes(page)).map(w => w.id), [A, B, A, B]);
         await signals(page);
         assert.equal((await writes(page)).length, 4);
@@ -318,7 +326,7 @@ test('slow API initialization and initially empty/auto-only lists recover within
         await page.clock.runFor(4_000);
         assert.deepEqual(await writes(page), []);
         await page.evaluate(() => { model.levels = ['hd720', 'large', 'auto']; });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.deepEqual(await writes(page), [{ id: A, min: 'hd720', max: 'hd720' }]);
     } finally { await context.close(); }
 });
@@ -334,7 +342,7 @@ test('expired empty lists cannot be revived by later event storms; next video st
         assert.deepEqual(await writes(page), []);
         assert.equal(await page.evaluate(() => reads), readCount);
         await page.evaluate(id => navigate(id), B);
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.equal((await writes(page)).length, 1);
     } finally { await context.close(); }
 });
@@ -351,10 +359,10 @@ test('old player/response IDs and pending tasks cannot set quality for the wrong
         await page.clock.runFor(3_001);
         assert.deepEqual(await writes(page), []);
         await page.evaluate(id => { model.id = id; }, B);
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.deepEqual(await writes(page), []); // stale response still identifies A
         await page.evaluate(id => { model.responseId = id; installPlayer(true); signal('yt-player-updated'); }, B);
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.deepEqual(await writes(page), [{ id: B, min: 'hd1080', max: 'hd1080' }]);
     } finally { await context.close(); }
 });
@@ -364,7 +372,7 @@ test('identity and element are rechecked after reading the quality list', async 
         const { page, context } = await setup(option);
         try {
             assert.deepEqual(await writes(page), []);
-            await page.clock.runFor(2_001);
+            await page.clock.runFor(4_001);
             if (option.replaceDuringRead) assert.equal((await writes(page)).length, 1);
             else assert.deepEqual(await writes(page), []);
         } finally { await context.close(); }
@@ -378,7 +386,7 @@ test('navigation start cancels pending work before the URL changes', async () =>
         await page.clock.runFor(10_000);
         assert.deepEqual(await writes(page), []);
         await page.evaluate(id => { history.pushState({}, '', `/watch?v=${id}`); model.id = model.responseId = id; signal('yt-navigate-finish'); }, B);
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.equal((await writes(page))[0].id, B);
     } finally { await context.close(); }
 });
@@ -388,7 +396,7 @@ test('readiness getter exceptions recover; setter errors and no acknowledgement 
     try {
         await ready.page.clock.runFor(2_000);
         await ready.page.evaluate(() => { model.readThrows = false; });
-        await ready.page.clock.runFor(2_001);
+        await ready.page.clock.runFor(4_001);
         assert.equal((await writes(ready.page)).length, 1);
     } finally { await ready.context.close(); }
     for (const option of [{ setterThrows: true }, { noAck: true }, { missingSetter: true }]) {
@@ -407,10 +415,10 @@ test('ads defer selection until content; live and premieres share the quality po
         await page.clock.runFor(4_000);
         assert.deepEqual(await writes(page), []);
         await page.evaluate(() => { model.isAd = false; document.getElementById('movie_player').classList.add('ad-showing'); });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.deepEqual(await writes(page), []);
         await page.evaluate(() => document.getElementById('movie_player').classList.remove('ad-showing'));
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.equal((await writes(page)).length, 1);
     } finally { await context.close(); }
     for (const option of [{ live: true }, { upcoming: true }, { liveStreamability: true }]) {
@@ -451,7 +459,7 @@ test('replay metadata is not required before applying the default once', async (
         await page.clock.runFor(2_000);
         assert.equal((await writes(page)).length, 1);
         await page.evaluate(() => { model.broadcast = { isLiveNow: false, endTimestamp: '2026-10-17T01:00:05+00:00' }; });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
         await signals(page);
         assert.equal((await writes(page)).length, 1);
@@ -490,7 +498,7 @@ test('embedded player may expose identity without the internal response API', as
 });
 
 test('a waiting premiere can start after the bounded readiness window expires', async () => {
-    const { page, context } = await setup({ upcoming: true, levels: [] });
+    const { page, context } = await setup({ upcoming: true, levels: [], state: -1 });
     try {
         await page.clock.runFor(60_000);
         assert.deepEqual(await writes(page), []);
@@ -499,7 +507,7 @@ test('a waiting premiere can start after the bounded readiness window expires', 
             model.state = 1;
             document.querySelector('video').dispatchEvent(new Event('playing'));
         });
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.equal((await writes(page)).length, 1);
         await page.evaluate(() => { model.preferred = 'large'; });
         await signals(page);
@@ -523,7 +531,7 @@ test('Shorts chooses the visible player rather than an offscreen duplicate with 
             current.before(offscreen);
             model.levels = ['hd1080'];
         });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.equal((await writes(page)).length, 1);
     } finally { await context.close(); }
 });
@@ -534,7 +542,7 @@ test('a late player on a route without a video ID is discovered without persiste
         await page.clock.runFor(12_000);
         assert.deepEqual(await writes(page), []);
         await page.evaluate(() => installPlayer());
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.equal((await writes(page)).length, 1);
         await signals(page);
         assert.equal((await writes(page)).length, 1);
@@ -558,7 +566,7 @@ for (const pending of [false, true]) {
                 installPlayer(true);
                 signal('yt-player-updated');
             });
-            await page.clock.runFor(2_001);
+            await page.clock.runFor(4_001);
             assert.equal((await writes(page)).length, 1);
             assert.equal(await page.evaluate(() => model.preferred), pending ? 'hd1080' : 'large');
         } finally { await context.close(); }
@@ -573,7 +581,7 @@ test('duplicate injection and repeated navigation signals do not duplicate liste
             for (let n = 0; n < 100; n++) { signal('yt-navigate-finish'); playerSignal('onStateChange'); }
             model.levels = ['hd1080'];
         });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.equal((await writes(page)).length, 1);
         assert.equal(await page.evaluate(() => Math.max(...[...buses[0].values()].map(fns => fns.size))), 1);
     } finally { await context.close(); }
@@ -590,13 +598,13 @@ test('pagehide stops pending tasks and pageshow resumes a pending visit after na
         await page.clock.runFor(5_000);
         assert.deepEqual(await writes(page), []);
         await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.equal((await writes(page)).length, 1);
         await page.evaluate(() => {
             window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
             window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
         });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.equal((await writes(page)).length, 1);
     } finally { await context.close(); }
 });
@@ -608,12 +616,12 @@ test('committed URL changes are detected without any YouTube or media events', a
             model.id = model.responseId = id;
             history.pushState({}, '', `/watch?v=${id}`);
         }, B);
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         await page.evaluate(id => {
             model.id = model.responseId = id;
             history.replaceState({}, '', `/watch?v=${id}`);
         }, A);
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.deepEqual((await writes(page)).map(w => w.id), [A, B, A]);
     } finally { await context.close(); }
 });
@@ -689,11 +697,11 @@ test('saving a preference persists it for new visits and other-tab changes witho
         assert.equal((await writes(page)).length, 1);
         assert.equal(await page.evaluate(() => model.preferred), 'large');
         await page.evaluate(id => navigate(id), B);
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.equal((await writes(page)).at(-1).min, 'hd2160');
         // GM storage is shared between tabs/domains; read it on every new visit.
         await page.evaluate(id => { gmValues['youtube-default-quality.preferred-height'] = 720; navigate(id); }, A);
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.equal((await writes(page)).at(-1).min, 'hd720');
         await openConfig(page);
         assert.equal(await panel.getByLabel('首选清晰度').inputValue(), '720');
@@ -708,7 +716,7 @@ test('saving during initialization keeps this visit preference snapshot and manu
         await panel.getByRole('button', { name: '保存', exact: true }).click();
         await panel.getByRole('button', { name: '关闭', exact: true }).click();
         await page.evaluate(() => { model.levels = ['hd1080', 'hd720']; });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.equal((await writes(page)).at(-1).min, 'hd1080');
     } finally { await context.close(); }
 });
@@ -774,7 +782,7 @@ for (const lazyMenuAsync of [false, true]) {
         const { page, context, errors } = await setup({ nativeMenu: true, lazyNativeMenu: true,
             lazyMenuAsync, preferred: 'auto', playback: 'hd1080' });
         try {
-            await page.clock.runFor(2_001);
+            await page.clock.runFor(4_001);
             assert.equal(await page.evaluate(() => menuOpens), 1);
             assert.equal(await page.evaluate(() => nativeActions), 1);
             assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
@@ -806,7 +814,7 @@ test('native menu preparation failure restores UI and never loops or falls back 
 test('navigation during menu preparation cannot apply the old video selection to the new video', async () => {
     const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, navigateDuringNativeOpen: B });
     try {
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.deepEqual((await writes(page)).map(x => x.id), [B]);
         assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
     } finally { await context.close(); }
@@ -822,10 +830,10 @@ test('long ads do not consume the main-content opportunity, even if playing arri
             model.state = 3;
             document.querySelector('video').dispatchEvent(new Event('playing'));
         });
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.deepEqual(await writes(page), []);
         await page.evaluate(() => { model.state = 1; playerSignal('onStateChange'); });
-        await page.clock.runFor(1);
+        await page.clock.runFor(2_501);
         assert.equal((await writes(page)).length, 1);
         await page.evaluate(() => { model.preferred = 'auto'; });
         await signals(page);
@@ -851,7 +859,7 @@ test('repeated playback events cannot keep extending the main-content readiness 
         await signals(page);
         assert.ok(await page.evaluate(() => reads) <= 30);
         await page.evaluate(() => { model.levels = ['hd1080']; playerSignal('onStateChange'); });
-        await page.clock.runFor(2_001);
+        await page.clock.runFor(4_001);
         assert.deepEqual(await writes(page), []);
     } finally { await context.close(); }
 });
@@ -870,3 +878,100 @@ for (const firstCloseIgnored of [false, true]) {
         } finally { await context.close(); }
     });
 }
+
+
+for (const nativeMisses of [1, 99]) {
+    test(`unacknowledged native Auto clicks retry only within a three-action bound (${nativeMisses})`, async () => {
+        const { page, context } = await setup({ nativeMenu: true, preferred: 'auto', nativeMisses });
+        try {
+            await page.clock.runFor(10_000);
+            assert.equal(await page.evaluate(() => nativeActions), nativeMisses === 1 ? 2 : 3);
+            assert.equal(await page.evaluate(() => model.preferred), nativeMisses === 1 ? 'hd1080' : 'auto');
+            await signals(page);
+            await page.clock.runFor(60_000);
+            assert.equal(await page.evaluate(() => nativeActions), nativeMisses === 1 ? 2 : 3);
+        } finally { await context.close(); }
+    });
+}
+
+test('manual Auto during native confirmation cancels every pending retry', async () => {
+    const { page, context } = await setup({ nativeMenu: true, preferred: 'auto', nativeMisses: 99 });
+    try {
+        await page.clock.runFor(100);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('Enter');
+        await signals(page);
+        await page.clock.runFor(60_000);
+        assert.equal(await page.evaluate(() => nativeActions), 2); // one script click, one user action
+    } finally { await context.close(); }
+});
+
+test('delayed native acknowledgement ends confirmation without a second selection', async () => {
+    const { page, context } = await setup({ nativeMenu: true, preferred: 'auto', nativeMisses: 99 });
+    try {
+        await page.clock.runFor(100);
+        await page.evaluate(() => { model.preferred = 'hd1080'; playerSignal('onPlaybackQualityChange'); });
+        await page.clock.runFor(10_000);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+    } finally { await context.close(); }
+});
+
+test('navigation cancels an unconfirmed native selection before retrying the next video', async () => {
+    const { page, context } = await setup({ nativeMenu: true, preferred: 'auto', nativeMisses: 1 });
+    try {
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        await page.evaluate(id => navigate(id), B);
+        await page.clock.runFor(10_000);
+        const actions = await writes(page);
+        assert.deepEqual(actions.map(action => action.id), [A, B]);
+        await signals(page);
+        assert.equal(await page.evaluate(() => nativeActions), 2);
+    } finally { await context.close(); }
+});
+
+test('manual 480p during native confirmation cannot be overridden by a pending retry', async () => {
+    const { page, context } = await setup({ nativeMenu: true, preferred: 'auto', nativeMisses: 1 });
+    try {
+        await page.getByRole('menuitemradio', { name: '480p', exact: true }).press('Enter');
+        await signals(page);
+        assert.equal(await page.evaluate(() => model.preferred), 'large');
+        assert.equal(await page.evaluate(() => nativeActions), 2);
+    } finally { await context.close(); }
+});
+
+
+test('available levels before actual media readiness cannot consume the automatic selection', async () => {
+    const { page, context } = await setup({ nativeMenu: true, mediaReady: 0 });
+    try {
+        assert.equal(await page.evaluate(() => nativeActions), 0);
+        await page.evaluate(() => { model.mediaReady = 4; playerSignal('onStateChange'); });
+        await page.clock.runFor(1_000);
+        assert.equal(await page.evaluate(() => nativeActions), 0);
+        await page.clock.runFor(4_001);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+    } finally { await context.close(); }
+});
+
+test('a startup media source replacement restarts stability before the only successful choice', async () => {
+    const { page, context } = await setup({ nativeMenu: true, mediaReady: 0 });
+    try {
+        await page.evaluate(() => { model.mediaReady = 4; playerSignal('onStateChange'); });
+        await page.clock.runFor(1_000);
+        await page.evaluate(() => { model.mediaSource = 'blob:final'; document.querySelector('video').dispatchEvent(new Event('loadstart')); });
+        await page.clock.runFor(1_000);
+        assert.equal(await page.evaluate(() => nativeActions), 0);
+        await page.clock.runFor(4_001);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+    } finally { await context.close(); }
+});
+
+test('manual choice while media is initializing cancels the future stable-media selection', async () => {
+    const { page, context } = await setup({ nativeMenu: true, mediaReady: 0 });
+    try {
+        await page.getByRole('menuitemradio', { name: '480p', exact: true }).press('Enter');
+        await page.evaluate(() => { model.mediaReady = 4; playerSignal('onStateChange'); });
+        await signals(page);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'large');
+    } finally { await context.close(); }
+});
