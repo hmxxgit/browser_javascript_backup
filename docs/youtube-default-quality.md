@@ -25,6 +25,8 @@
 
 成功设置后，脚本保留终态；任何播放事件或画质变化事件都不能再调用 setter。因此不需要猜测画质变化来自用户还是网络，也不会与播放器反复争夺控制权。
 
+**整页刷新会重新选择固定 1080P，即使 URL 和视频 ID 完全相同。** 手动选择保护只存放在当前文档内存中，不写入跨页面存储；刷新创建新文档后，`document-start` 重新执行脚本并建立新的状态。刷新前手动选择 480P 或 Auto 不影响刷新后的默认策略。
+
 初始化期间，仅捕获原生画质面板中 `role="menuitemradio"` 选项的可信主指针按下 / 点击、Enter / 空格激活，进入 `manual` 终态；包括选择 Auto。仅打开设置、查看 Auto（1080P）或用方向键移动焦点不会取消默认策略。脚本自身的合成点击不会被误判为用户选择。
 
 ## 就绪检查、导航与资源管理
@@ -64,9 +66,17 @@ node tests/youtube-default-quality-auto.live.cjs
 YOUTUBE_TEST_VIDEO=Gt4_60l-mDc YOUTUBE_TEST_START_QUALITY=hd720 node tests/youtube-default-quality-auto.live.cjs
 # 直播、回放、Shorts 和第三方页面内 iframe。
 node tests/youtube-default-quality-surfaces.live.cjs
+# 同一视频手动改为 480P / Auto 后，真正 reload 并确认固定 1080P。
+node tests/youtube-default-quality-reload.live.cjs
 ```
 
 离线测试在真实 Chromium 浏览器中加载模拟播放器，验证脚本状态机；不等于验证 YouTube 的真实菜单、接口或视频画面。1.1.0 的完整仓库 `npm test` 共 71 项通过；YouTube 的 58 项在 Edge 和 Chrome 均通过。真实网站检查结果见下方记录。
+
+### 同一视频整页刷新专项（2026-10-17）
+
+1.1.0 原有的内存状态设计已支持整页刷新重置，无需修改选择策略。新增 [刷新专项脚本](../tests/youtube-default-quality-reload.live.cjs)，在真实 `aqz-KE-bpKQ` 页面 document-start 注入：Chrome 155.0.8059.84 与 Edge 155.0.4283.60 均通过“手动 480P → 同地址 reload”及“手动 Auto → 同地址 reload”两项。刷新前尊重手动档位；刷新后固定首选为 `hd1080`，解码 1920×1080，原生菜单勾选 1080P，并确认文档内存标记已清除。
+
+测试用可信 Enter 激活原生画质选项，以避开菜单动画的点击位置竞争。此前鼠标点击检查曾因元素不稳定 / 重建而超时，不计为通过。在反馈回放 `Gt4_60l-mDc` 上，曾单次完成 480P 刷新检查，但重复检查进入广告阶段并超时（`ad-showing` / `ad-interrupting`），未计为完整通过；不据此声称已验证所有广告条件。刷新后的播放器可能暂未启动，测试会请求播放后等待真实格式就绪。未安装 Tampermonkey 扩展。
 
 ### 1.1.0 全站统一策略（2026-10-17）
 

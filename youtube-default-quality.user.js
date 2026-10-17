@@ -28,6 +28,8 @@
     const MAX_PROBES = 30;
     const PLAYER_EVENTS = ['onReady', 'onStateChange', 'onPlaybackQualityChange', 'videodatachange'];
     const PLAYER_SELECTOR = '#movie_player, #shorts-player, .html5-video-player';
+    // Memory belongs to this document only. A full reload of the same video
+    // starts a fresh session and selects 1080p again, even after a manual choice.
     let session = null;
     let player = null;
     let timer = null;

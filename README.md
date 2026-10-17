@@ -49,6 +49,7 @@
 - 覆盖 `youtube.com` 及其所有子域名，不按普通视频、直播、首播、回放、Shorts 或嵌入式播放器区分：有 1080P 就明确选择固定 1080P，无需设置面板。视频本身没有 1080P 时，只能选择实际可用的最高画质。
 - 即使当前是 **Auto（1080P）**，进入新视频时也会明确选择固定 1080P；当前解码分辨率相同不会跳过设置。
 - 每个视频至多执行一次画质选择，之后可用原生菜单改为 4K、480P 或自动；暂停、继续、拖动、全屏均不会重新设置。切换其他视频后重新生效，返回上一个视频也会重新应用默认策略。
+- **刷新同一个视频页面也会重新选择固定 1080P**：手动选择仅保留到本次页面访问结束，不跨刷新保存。
 - 等待期间仅打开设置、查看画质或移动焦点不会取消默认设置；实际选择画质（包括 Auto）才交还控制权。
 - 播放器未就绪时有限等待，最多 45 秒 / 30 次检查；待播页面超时后，首次实际播放可获得一次新的有限等待额度。接口异常或没有确认成功时，不重复写入画质。
 - 1.1.0 已移除直播类型过滤，允许 YouTube iframe 中执行。真实 Edge / Chrome 验证涵盖正在直播、直播回放、Shorts 及嵌入式播放器；其他子域名仅验证匹配和模拟状态机，不代表所有站点变体均已实测。依赖 YouTube 非公开接口，网站更新可能失效。[技术说明、测试记录与限制](docs/youtube-default-quality.md)。
@@ -89,6 +90,8 @@ Auto（1080P）专项回归：`node tests/youtube-default-quality-auto.live.cjs`
 直播回放回归：`YOUTUBE_TEST_VIDEO=Gt4_60l-mDc YOUTUBE_TEST_START_QUALITY=hd720 node tests/youtube-default-quality-auto.live.cjs`，检查反馈视频从 Auto（720P）改为固定 1080P，并验证全新页面的 document-start 加载。
 
 跨播放器场景回归：`node tests/youtube-default-quality-surfaces.live.cjs`，验证直播回放、正在直播、Shorts 与第三方页面中的 YouTube iframe；加 `X_UI_BROWSER=chrome` 使用 Chrome。
+
+同视频刷新回归：`node tests/youtube-default-quality-reload.live.cjs`，手动选择 480P / Auto 后刷新同一地址，检查恢复固定 1080P；加 `X_UI_BROWSER=chrome` 使用 Chrome。
 
 X 界面精简思路参考 [Minimal Twitter](https://github.com/typefully/minimal-twitter) 和 [Control Panel for Twitter](https://github.com/insin/control-panel-for-twitter)；脚本独立实现，不引入外部运行时。
 
