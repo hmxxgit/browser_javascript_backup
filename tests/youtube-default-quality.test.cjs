@@ -110,7 +110,7 @@ async function setup(options = {}) {
             p.getPreferredQuality = () => model.preferred || 'auto';
             p.getPlaybackQuality = () => model.playback || 'unknown';
             p.getPlayerState = () => model.state ?? -1;
-            if (model.nativeMenu) p.getAvailableQualityData = () => [
+            if (model.nativeMenu) p.getAvailableQualityData = () => model.nativeData || [
                 { quality: 'hd1080', qualityLabel: '1080p60 Premium', paygatedQualityDetails: {} },
                 { quality: 'hd1080', qualityLabel: '1080p60', isPlayable: true },
                 { quality: 'large', qualityLabel: '480p', isPlayable: true },
@@ -120,9 +120,10 @@ async function setup(options = {}) {
                 menuOpens += 1;
                 p.classList.add('ytp-settings-shown');
                 p.querySelector('.ytp-settings-button').setAttribute('aria-expanded', model.staleSettingsAria ? 'false' : 'true');
-                if (model.nativeOpenThrows) throw new Error('menu not ready');
+                if (model.nativeOpenThrows || menuOpens <= (model.nativeOpenMisses || 0)) throw new Error('menu not ready');
+                if (model.nativeOpenNoOptions) return;
                 const append = () => p.querySelector('.ytp-settings-menu').append(pendingQualityMenu);
-                if (model.lazyMenuAsync) setTimeout(append, 0);
+                if (model.lazyMenuAsync) setTimeout(append, model.lazyMenuDelay || 0);
                 else append();
                 if (model.navigateDuringNativeOpen) {
                     model.id = model.responseId = model.navigateDuringNativeOpen;
@@ -800,11 +801,11 @@ for (const lazyMenuAsync of [false, true]) {
     });
 }
 
-test('native menu preparation failure restores UI and never loops or falls back to a second quality action', async () => {
+test('permanent native menu preparation failure stops after two preparations without a quality write', async () => {
     const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, nativeOpenThrows: true });
     try {
         await signals(page);
-        assert.equal(await page.evaluate(() => menuOpens), 1);
+        assert.equal(await page.evaluate(() => menuOpens), 2);
         assert.deepEqual(await writes(page), []);
         assert.equal(await page.locator('.ytp-settings-button').getAttribute('aria-expanded'), 'false');
         assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
@@ -973,5 +974,256 @@ test('manual choice while media is initializing cancels the future stable-media 
         await signals(page);
         assert.equal(await page.evaluate(() => nativeActions), 1);
         assert.equal(await page.evaluate(() => model.preferred), 'large');
+    } finally { await context.close(); }
+});
+
+
+// Review regressions: exercised against 2.1.1 before applying the fixes.
+test('manual quality before the player API exists protects this visit', async () => {
+    const { page, context } = await setup({ notReady: true, nativeMenu: true });
+    try {
+        await page.getByRole('menuitemradio', { name: '480p', exact: true }).press('Enter');
+        await page.evaluate(() => { installPlayer(); signal('yt-player-updated'); });
+        await signals(page);
+        assert.equal(await page.evaluate(() => model.preferred), 'large');
+        assert.equal((await writes(page)).length, 1);
+    } finally { await context.close(); }
+});
+
+test('an explicit new URL never binds the old video player while waiting', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        await page.evaluate(id => { history.pushState({}, '', `/watch?v=${id}`); signal('yt-navigate-finish'); }, B);
+        await page.clock.runFor(100);
+        assert.equal(await page.evaluate(() => [...buses[0].values()].reduce((n, fns) => n + fns.size, 0)), 0);
+        assert.deepEqual(await writes(page), []);
+    } finally { await context.close(); }
+});
+
+test('a working native quality option does not require the Range API', async () => {
+    const { page, context } = await setup({ nativeMenu: true, missingSetter: true });
+    try {
+        await signals(page);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
+    } finally { await context.close(); }
+});
+
+test('a transient native menu initialization error can recover within a bounded second attempt', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, nativeOpenMisses: 1 });
+    try {
+        await page.clock.runFor(10_000);
+        assert.equal(await page.evaluate(() => menuOpens), 2);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+    } finally { await context.close(); }
+});
+
+test('malformed quality-data entries do not hide a valid native choice', async () => {
+    const { page, context } = await setup({ nativeMenu: true,
+        nativeData: [null, 42, {}, { quality: 'hd1080', qualityLabel: '1080p60', isPlayable: true }] });
+    try {
+        await signals(page);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+    } finally { await context.close(); }
+});
+
+test('pagehide remains suspended even if document lifecycle events arrive afterwards', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        await page.evaluate(() => {
+            window.dispatchEvent(new Event('pagehide'));
+            signal('yt-player-updated');
+            document.querySelector('video').dispatchEvent(new Event('canplay'));
+        });
+        await page.clock.runFor(100);
+        assert.equal(await page.evaluate(() => [...buses[0].values()].reduce((n, fns) => n + fns.size, 0)), 0);
+        await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+        await page.evaluate(() => { model.levels = ['hd1080']; });
+        await page.clock.runFor(5_000);
+        assert.equal((await writes(page)).length, 1);
+    } finally { await context.close(); }
+});
+
+
+test('manual selection on a routeless player before API initialization survives first identity discovery', async () => {
+    const { page, context } = await setup({ route: '/@channel/live', notReady: true, nativeMenu: true });
+    try {
+        await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('Enter');
+        await page.evaluate(() => { installPlayer(); signal('yt-player-updated'); });
+        await signals(page);
+        assert.equal((await writes(page)).length, 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'auto');
+        await page.evaluate(id => navigate(id), B);
+        await page.clock.runFor(5_000);
+        assert.equal((await writes(page)).length, 2);
+    } finally { await context.close(); }
+});
+
+test('viewing an already-open settings panel does not let preparation close it or lock manual override', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, mediaReady: 0 });
+    try {
+        await page.locator('.ytp-settings-button').click();
+        await page.evaluate(() => { model.mediaReady = 4; playerSignal('onStateChange'); });
+        await page.clock.runFor(5_000);
+        assert.equal(await page.evaluate(() => menuOpens), 0);
+        assert.equal(await page.locator('.ytp-settings-button').getAttribute('aria-expanded'), 'true');
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), false);
+        await page.locator('.ytp-settings-button').click();
+        await page.clock.runFor(5_000);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+    } finally { await context.close(); }
+});
+
+test('async preparation is cancelled on trusted settings interaction without stealing focus', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true,
+        lazyMenuAsync: true, lazyMenuDelay: 1_200 });
+    try {
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 1);
+        await page.locator('.ytp-settings-button').click();
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+        assert.equal(await page.evaluate(() => settingsClicks), 1); // the user's own click only
+        assert.equal(await page.evaluate(() => document.activeElement.className), 'ytp-settings-button');
+        await page.clock.runFor(800);
+        await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('Enter');
+        await signals(page);
+        assert.equal(await page.evaluate(() => nativeActions), 1); // user Auto only
+    } finally { await context.close(); }
+});
+
+test('async menu timeout cleans temporary UI and stops after the preparation bound', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, nativeOpenNoOptions: true });
+    try {
+        await signals(page);
+        assert.equal(await page.evaluate(() => menuOpens), 2);
+        assert.deepEqual(await writes(page), []);
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+        assert.equal(await page.locator('.ytp-settings-shown').count(), 0);
+    } finally { await context.close(); }
+});
+
+test('pagehide removes async preparation resources before the video identity changes', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, nativeOpenNoOptions: true });
+    try {
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 1);
+        await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+        assert.equal(await page.locator('.ytp-settings-shown').count(), 0);
+        await page.clock.runFor(60_000);
+        assert.equal(await page.evaluate(() => menuOpens), 1);
+        assert.deepEqual(await writes(page), []);
+    } finally { await context.close(); }
+});
+
+test('unrelated preloaded media loadstart cannot reset the active stability window', async () => {
+    const { page, context } = await setup({ mediaReady: 0 });
+    try {
+        await page.evaluate(() => {
+            const preload = document.createElement('div');
+            preload.className = 'html5-video-player';
+            preload.innerHTML = '<video></video>';
+            preload.getVideoData = () => ({ video_id: 'sUZe3nd-3AY' });
+            document.body.append(preload);
+            model.mediaReady = 4;
+            playerSignal('onStateChange');
+        });
+        await page.clock.runFor(1_000);
+        await page.evaluate(() => document.querySelector('.html5-video-player video').dispatchEvent(new Event('loadstart')));
+        await page.clock.runFor(2_100);
+        assert.equal((await writes(page)).length, 1);
+    } finally { await context.close(); }
+});
+
+test('notification bursts coalesce discovery and never rebind a suspended player', async () => {
+    const { page, context } = await setup();
+    try {
+        const scans = await page.evaluate(async () => {
+            let count = 0;
+            const query = document.querySelectorAll.bind(document);
+            document.querySelectorAll = selector => { if (selector.includes('#movie_player')) count++; return query(selector); };
+            for (let n = 0; n < 100; n++) {
+                playerSignal('onStateChange'); signal('yt-player-updated'); signal('yt-page-data-updated');
+            }
+            await Promise.resolve();
+            return count;
+        });
+        assert.equal(scans, 1);
+        assert.equal((await writes(page)).length, 1);
+    } finally { await context.close(); }
+});
+
+test('rapid Shorts A-B-C-A navigation applies only the latest valid visit', async () => {
+    const { page, context } = await setup({ route: `/shorts/${A}`, mediaReady: 0 });
+    try {
+        await page.evaluate(({ A, B }) => {
+            for (const id of [B, 'sUZe3nd-3AY', A]) {
+                signal('yt-navigate-start');
+                history.pushState({}, '', `/shorts/${id}`);
+                model.id = model.responseId = id;
+                signal('yt-navigate-finish');
+            }
+            model.mediaReady = 4;
+        }, { A, B });
+        await page.clock.runFor(5_000);
+        assert.deepEqual((await writes(page)).map(action => action.id), [A]);
+    } finally { await context.close(); }
+});
+
+test('a user focusing another control during async preparation keeps that focus', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true,
+        lazyMenuAsync: true, lazyMenuDelay: 1_200 });
+    try {
+        await page.evaluate(() => { const input = document.createElement('input'); input.id = 'user-search'; document.body.append(input); });
+        await page.locator('#user-search').click();
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+        await page.clock.runFor(5_000);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'user-search');
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), false);
+    } finally { await context.close(); }
+});
+
+test('Range fallback cannot bypass an explicitly unplayable native tier', async () => {
+    const { page, context } = await setup({ nativeMenu: true,
+        nativeData: [{ quality: 'hd1080', qualityLabel: '1080p60', isPlayable: false }] });
+    try {
+        await signals(page);
+        assert.deepEqual(await writes(page), []);
+    } finally { await context.close(); }
+});
+
+test('menu callbacks changing availability or starting an ad cannot cause a stale quality write', async () => {
+    for (const startAd of [false, true]) {
+        const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, mediaReady: 0 });
+        try {
+            await page.evaluate(startAd => {
+                const p = document.getElementById('movie_player');
+                const open = p.openSettingsMenuItem;
+                p.openSettingsMenuItem = function (...args) {
+                    open.apply(this, args);
+                    if (startAd) { model.isAd = true; p.classList.add('ad-showing'); }
+                    else model.levels = [];
+                };
+                model.mediaReady = 4;
+                playerSignal('onStateChange');
+            }, startAd);
+            await signals(page);
+            assert.deepEqual(await writes(page), []);
+            assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+        } finally { await context.close(); }
+    }
+});
+
+test('a throwing popup close cannot prevent temporary-style cleanup or repeat a quality write', async () => {
+    const { page, context, errors } = await setup({ nativeMenu: true, lazyNativeMenu: true, mediaReady: 0 });
+    try {
+        await page.evaluate(() => {
+            document.querySelector('.ytp-settings-button').click = () => { throw new Error('popup disposed'); };
+            model.mediaReady = 4;
+            playerSignal('onStateChange');
+        });
+        await signals(page);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+        assert.deepEqual(errors, []);
     } finally { await context.close(); }
 });

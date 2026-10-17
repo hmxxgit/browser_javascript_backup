@@ -23,7 +23,11 @@ const snapshot = async page => {
     const p = document.getElementById('movie_player');
     return {
         preferred: p.getPreferredQuality(), playback: p.getPlaybackQuality(),
+        state: p.getPlayerState(), readyState: p.querySelector('video')?.readyState,
+        decodedHeight: p.querySelector('video')?.videoHeight,
+        controller: window.__youtubeDefaultQualityOnceV1__?.state,
         checked: [...p.querySelectorAll('.ytp-quality-menu [aria-checked="true"]')].map(e => e.textContent.trim()),
+        hasNativeOptions: !!p.querySelector('.ytp-quality-menu [role="menuitemradio"]'),
         actions: window.autoRegressionActions,
         settingsClicks: window.autoRegressionSettingsClicks,
         menuInitializations: window.autoRegressionMenuInitializations,
@@ -94,16 +98,28 @@ const snapshot = async page => {
                         if (option) autoRegressionActions.push({ kind: 'native', label: option.textContent.trim() });
                     }, true);
                 });
+                // Auto can queue a format change while paused. Resume until
+                // actual media is playable; otherwise this fixture can stall its
+                // own initialization. Record the observed Auto format below.
+                await page.evaluate(() => document.getElementById('movie_player').playVideo());
+                await page.waitForFunction(() => {
+                    const p = document.getElementById('movie_player');
+                    return p.getPreferredQuality() === 'auto' && p.querySelector('video')?.readyState >= 2;
+                });
                 const before = await snapshot(page);
                 await page.evaluate(source);
                 await page.waitForFunction(() => document.getElementById('movie_player').getPreferredQuality() === 'hd1080');
                 const after = await snapshot(page);
                 assert.equal(after.actions.length, 1);
-                assert.ok(after.settingsClicks <= (existingMenu ? 0 : 2));
-                assert.equal(after.menuInitializations, !existingMenu && before.canInitializeNativeMenu ? 1 : 0);
+                // YouTube may remove options even during the script's media
+                // stability window. Bound actual initialization/toggle counts;
+                // a pre-injection DOM snapshot cannot predict later readiness.
+                assert.ok(after.menuInitializations <= 1);
+                assert.ok(after.settingsClicks <= 2 * after.menuInitializations);
+                if (!before.canInitializeNativeMenu) assert.equal(after.menuInitializations, 0);
                 assert.notEqual(after.settingsExpanded, 'true');
                 assert.equal(after.settingsExpanded === 'true', before.settingsExpanded === 'true');
-                assert.equal(after.actions[0].kind, existingMenu || before.canInitializeNativeMenu ? 'native' : 'range');
+                assert.equal(after.actions[0].kind, before.hasNativeOptions || before.canInitializeNativeMenu ? 'native' : 'range');
                 // Auto may already have queued a lower format during setup. Let
                 // the fixed request finish decoding before checking the menu;
                 // some player experiments temporarily check the decoded format.
@@ -120,13 +136,15 @@ const snapshot = async page => {
                 assert.ok(!fixed.checked.some(label => /^Auto/.test(label)));
                 await page.locator('#movie_player .ytp-panel-back-button:visible').first().click();
                 fixed.qualitySummary = await page.locator('.ytp-settings-menu .ytp-menuitem').filter({ hasText: /^Quality/ }).innerText();
-                assert.match(fixed.qualitySummary.replace(/\s+/g, ' '), /^Quality\s*1080p/);
+                assert.match(fixed.qualitySummary.replace(/\s+/g, ' ').trim(), /^Quality\s*1080p/);
                 assert.ok(!fixed.qualitySummary.includes('Auto'));
                 await openQuality(page);
-                report.checks.push({ check: `Auto ${startupHeight}p becomes fixed 1080p (${existingMenu ? 'existing hidden menu' : 'menu not initialized'})`, before, after, fixed });
-                console.error(`PASS: Auto ${startupHeight}p becomes fixed 1080p (${existingMenu ? 'existing native option' : 'native menu initialization or range fallback'}), checked option and Quality summary verified`);
+                report.checks.push({ check: `Auto (${before.playback}, decoded ${before.decodedHeight}p) becomes fixed 1080p (${existingMenu ? 'previously opened menu' : 'menu never opened'})`, before, after, fixed });
+                console.error(`PASS: Auto (${before.playback}, decoded ${before.decodedHeight}p) becomes fixed 1080p, checked option and Quality summary verified`);
 
-                await page.locator('.ytp-quality-menu [role="menuitemradio"]').filter({ hasText: /^Auto/ }).click();
+                // Enter is a real user activation without a moving popup's
+                // pointer-position race; the controller must yield to it too.
+                await page.locator('.ytp-quality-menu [role="menuitemradio"]').filter({ hasText: /^Auto/ }).press('Enter');
                 await page.evaluate(() => {
                     const p = document.getElementById('movie_player');
                     document.dispatchEvent(new Event('yt-navigate-finish'));
@@ -137,8 +155,14 @@ const snapshot = async page => {
                 await page.waitForFunction(() => document.getElementById('movie_player').getPlayerState() === 2);
                 const manual = await snapshot(page);
                 assert.equal(manual.preferred, 'auto');
-                assert.equal(manual.actions.length, 1);
-                report.checks.push({ check: `manual Auto remains respected (${existingMenu ? 'native' : 'range'} path)`, result: manual });
+                // YouTube's trusted Enter handler may itself dispatch an
+                // untrusted Auto click. Keep it in diagnostics, but it is the
+                // user's requested Auto action, not an extra fixed-tier write.
+                const fixedActions = manual.actions.filter(action => action.kind !== 'native' || !/^Auto/.test(action.label));
+                assert.equal(fixedActions.length, after.actions.length);
+                assert.equal(manual.controller.manualOverride, true);
+                assert.equal(manual.controller.phase, 'manual');
+                report.checks.push({ check: `manual Auto remains respected (${after.actions[0].kind} path)`, result: manual });
                 console.error('PASS: manual Auto remains respected');
             } catch (error) {
                 report.lastState = await snapshot(page).catch(() => null);

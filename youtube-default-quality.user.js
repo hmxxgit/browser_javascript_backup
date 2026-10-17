@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      2.1.1
+// @version      2.2.0
 // @description  可配置首选画质，不足时向下匹配；固定画质确认后不再干预，尊重用户手动选择。
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
@@ -30,11 +30,12 @@
     const INSTANCE = '__youtubeDefaultQualityOnceV1__';
     if (window[INSTANCE]) return;
     window[INSTANCE] = Object.freeze({
-        version: '2.1.1',
+        version: '2.2.0',
         // Read-only troubleshooting snapshot; never exposes GM storage or controls.
         get state() { return session ? { id: session.id, phase: session.phase,
             probes: session.probes, nativeAttempts: session.nativeAttempts || 0,
-            menuPrepared: !!session.menuPrepared, navigating, timerPending: timer !== null } : null; },
+            manualOverride: session.manualOverride, menuPhase: session.menu?.phase || 'idle',
+            menuAttempts: session.menuAttempts || 0, navigating, timerPending: timer !== null } : null; },
     });
 
     const PREFERENCE_KEY = 'youtube-default-quality.preferred-height';
@@ -132,6 +133,19 @@
     let player = null;
     let timer = null;
     let navigating = false;
+    let suspended = false;
+    let refreshQueued = false;
+
+    // Player and DOM notifications often arrive in one burst. Navigation and
+    // manual input still cancel synchronously; discovery is coalesced per task.
+    function requestRefresh() {
+        if (suspended || refreshQueued) return;
+        refreshQueued = true;
+        queueMicrotask(() => {
+            refreshQueued = false;
+            if (!suspended) refresh();
+        });
+    }
 
     function urlVideoId() {
         const url = new URL(location.href);
@@ -152,8 +166,7 @@
         let candidates = [...document.querySelectorAll(PLAYER_SELECTOR)];
         const expected = urlVideoId();
         if (expected) {
-            const matching = candidates.filter(candidate => playerVideoId(candidate) === expected);
-            if (matching.length) candidates = matching;
+            candidates = candidates.filter(candidate => playerVideoId(candidate) === expected);
         }
         // Shorts can keep off-screen players around. Prefer the visible player
         // that is actually playing; URL identity still guards stale/preloaded IDs.
@@ -176,27 +189,32 @@
 
     function finish(state, phase) {
         if (session !== state) return;
-        state.phase = phase;
+        state.phase = state.manualOverride ? 'manual' : phase;
+        state.readyMedia = null;
+        state.pendingNative = null;
         cancelTimer();
+        state.menu?.restore?.();
+        state.menu = null;
     }
 
     function bindPlayer(next) {
         if (player === next) return;
         if (player && typeof player.removeEventListener === 'function') {
             for (const name of PLAYER_EVENTS) {
-                try { player.removeEventListener(name, refresh); } catch { /* disposed player */ }
+                try { player.removeEventListener(name, requestRefresh); } catch { /* disposed player */ }
             }
         }
         player = next;
         if (player && typeof player.addEventListener === 'function') {
             for (const name of PLAYER_EVENTS) {
-                try { player.addEventListener(name, refresh); } catch { /* not ready yet */ }
+                try { player.addEventListener(name, requestRefresh); } catch { /* not ready yet */ }
             }
         }
     }
 
     function schedule(state, delay) {
-        if (session !== state || state.phase !== 'waiting' || navigating || timer !== null) return;
+        if (session !== state || state.manualOverride || state.phase !== 'waiting' ||
+            suspended || navigating || timer !== null) return;
         timer = setTimeout(() => {
             timer = null;
             probe(state);
@@ -206,16 +224,21 @@
     // One state per consecutive active video, not a permanent map of viewed IDs.
     // A -> B -> A runs again; seek, replay, fullscreen and URL parameters keep A locked.
     function refresh() {
+        if (suspended) return;
         const candidate = findPlayer();
         // Channel/home players can disappear briefly during rebuilding. Retain
         // the same visit's lock until a different ID or page is observed.
         const id = urlVideoId() || playerVideoId(candidate) ||
             (session?.bootstrapUrl === location.href ? session.id : null);
         if (!session || id !== session.id || (!id && session.bootstrapUrl !== location.href)) {
+            const bootstrapManual = session && !session.id && session.manualOverride &&
+                session.manualPlayer === candidate && session.bootstrapUrl === location.href;
             cancelTimer();
+            session?.menu?.restore?.();
             // A null-ID bootstrap also has a bound: discover delayed players on
             // channel/playlist/home pages without requiring a /watch URL first.
-            session = { id, phase: 'waiting', probes: 0, deadline: Date.now() + WAIT_MS,
+            session = { id, phase: bootstrapManual ? 'manual' : 'waiting', manualOverride: !!bootstrapManual,
+                probes: 0, deadline: Date.now() + WAIT_MS,
                 bootstrapUrl: location.href, playbackStarted: false, preferredHeight: readPreference() };
         }
         // The initial element can exist before YouTube attaches its API. Do not bind
@@ -238,13 +261,17 @@
 
     function matches(state, candidate) {
         const expected = urlVideoId();
-        if (session !== state || !state.id || state.phase !== 'waiting' || navigating ||
+        if (session !== state || state.manualOverride || !state.id || state.phase !== 'waiting' ||
+            suspended || navigating ||
             (expected && expected !== state.id) || findPlayer() !== candidate || !candidate.isConnected) return false;
         // URL alone is unsafe during SPA navigation. Require player identity and
         // also check response identity when exposed (not all embeds expose it).
         const responseId = typeof candidate.getPlayerResponse === 'function' ?
             candidate.getPlayerResponse()?.videoDetails?.videoId : null;
-        return playerVideoId(candidate) === state.id && (!responseId || responseId === state.id);
+        const data = candidate.getVideoData();
+        return (data?.video_id || data?.videoId) === state.id && (!responseId || responseId === state.id) &&
+            !candidate.classList.contains('ad-showing') && !candidate.classList.contains('ad-interrupting') &&
+            !data?.isAd;
     }
 
     function nativeQualityOption(candidate, target) {
@@ -254,9 +281,11 @@
         const normalize = text => text.replace(/\s+/g, ' ').trim();
         // Match current, playable, non-paygated labels exactly. Do not guess a menu
         // index, translate "Auto", or accidentally choose an enhanced-bitrate tier.
-        const labels = new Set(data.filter(q => q.quality === target && q.isPlayable !== false &&
+        const labels = new Set(data.filter(q => q && typeof q === 'object' &&
+            q.quality === target && q.isPlayable === true &&
             !q.paygatedQualityDetails && typeof q.qualityLabel === 'string').map(q => normalize(q.qualityLabel)));
         for (const item of candidate.querySelectorAll('.ytp-quality-menu [role="menuitemradio"]')) {
+            if (item.closest(PLAYER_SELECTOR) !== candidate) continue;
             if (item.getAttribute('aria-disabled') === 'true') continue;
             const label = item.querySelector('.ytp-menuitem-label')?.cloneNode(true);
             if (!label) continue;
@@ -271,19 +300,44 @@
     // YouTube's OWN quality menu, then select its actual fixed option. The
     // advanced-menu command was checked in the current player source and UI.
     function prepareNativeSelection(state, candidate, target) {
-        const existing = nativeQualityOption(candidate, target);
-        if (existing) return { option: existing, restore() {} };
-        const button = candidate.querySelector('.ytp-settings-button');
-        if (typeof candidate.openSettingsMenuItem !== 'function' || !button) {
-            return { option: null, restore() {} }; // players without this native UI
+        let preparation = state.menu;
+        if (preparation && (preparation.player !== candidate || preparation.target !== target)) {
+            preparation.restore?.();
+            state.menu = preparation = null;
         }
-        if (state.menuPrepared) return { waiting: true, restore() {} };
-        state.menuPrepared = true;
-        // The programmatic advanced-menu command can show the popup before the
-        // gear's aria-expanded is updated. The player's shown class is authoritative.
+        const existing = nativeQualityOption(candidate, target);
+        if (existing) {
+            if (preparation) preparation.phase = 'ready';
+            return { option: existing, restore: () => preparation?.restore?.() };
+        }
+        const button = candidate.querySelector('.ytp-settings-button');
+        if (typeof candidate.getAvailableQualityData !== 'function' ||
+            typeof candidate.openSettingsMenuItem !== 'function' || !button) {
+            if (typeof candidate.getAvailableQualityData === 'function') {
+                const data = candidate.getAvailableQualityData();
+                const entries = Array.isArray(data) ? data.filter(q => q?.quality === target) : [];
+                // A fallback must not bypass an explicit unplayable/paygated tier.
+                if (entries.length && !entries.some(q => q.isPlayable === true && !q.paygatedQualityDetails)) {
+                    return { unavailable: true };
+                }
+            }
+            return { option: null, restore() {} }; // guarded Range fallback
+        }
+        if (preparation?.phase === 'pending') {
+            if (Date.now() < preparation.deadline) return { waiting: true };
+            preparation.phase = 'failed';
+            preparation.restore?.();
+            preparation.nextAt = Date.now() + 500;
+        }
+        if (preparation?.nextAt > Date.now()) return { waiting: true };
+        if ((state.menuAttempts || 0) >= 2) return { unavailable: true };
         const isExpanded = () => candidate.classList.contains('ytp-settings-shown') ||
             button.getAttribute('aria-expanded') === 'true';
-        const expanded = isExpanded();
+        // A user already viewing Settings owns its panel and focus. Existing
+        // quality options can be used, but do not replace their current panel.
+        if (isExpanded()) return { waiting: true };
+        preparation = state.menu = { player: candidate, target, phase: 'preparing' };
+        state.menuAttempts = (state.menuAttempts || 0) + 1;
         const previousFocus = document.activeElement;
         const attribute = 'data-yt-default-quality-preparing';
         const previousAttribute = candidate.getAttribute(attribute);
@@ -291,33 +345,60 @@
         style.textContent = `[${attribute}] .ytp-settings-menu{visibility:hidden!important}`;
         candidate.setAttribute(attribute, '');
         candidate.append(style);
-        const restore = () => {
+        let restored = false;
+        preparation.restore = () => {
+            if (restored) return;
+            restored = true;
             try {
-                if (candidate.isConnected && playerVideoId(candidate) === state.id) {
-                    // The first click can merely release YouTube's programmatic
-                    // popup latch. At most two UI toggles; neither writes quality.
-                    for (let n = 0; n < 2 && isExpanded() !== expanded; n++) button.click();
+                const expected = urlVideoId();
+                const sameContent = session === state && candidate.isConnected &&
+                    (!expected || expected === state.id) && playerVideoId(candidate) === state.id;
+                // Restore only our untouched popup while it still belongs to the
+                // old content. Navigation-start/pagehide may clean it before the
+                // identity changes; a replacement/new identity is never toggled.
+                if (sameContent && !state.manualOverride && !preparation.userInteraction) {
+                    for (let n = 0; n < 2 && isExpanded(); n++) button.click();
                 }
+            } catch {
+                // A disposed popup must not prevent style/listener cleanup.
             } finally {
                 style.remove();
                 if (previousAttribute === null) candidate.removeAttribute(attribute);
                 else candidate.setAttribute(attribute, previousAttribute);
-                if (previousFocus?.isConnected && document.activeElement !== previousFocus) previousFocus.focus();
+                if (!preparation.userInteraction && !state.manualOverride && !navigating && !suspended &&
+                    session === state && candidate.isConnected &&
+                    (!urlVideoId() || urlVideoId() === state.id) && playerVideoId(candidate) === state.id &&
+                    previousFocus?.isConnected && document.activeElement !== previousFocus) {
+                    try { previousFocus.focus(); } catch { /* disposed focus target */ }
+                }
             }
         };
         try {
             candidate.openSettingsMenuItem('menu_item_video_quality_advanced');
+            if (!matches(state, candidate)) {
+                preparation.phase = 'failed'; preparation.restore();
+                return { waiting: true };
+            }
             const option = nativeQualityOption(candidate, target);
-            if (option) return { option, restore };
-            // Some player versions construct options asynchronously. Retry READS
-            // only; never repeatedly open menus or issue an extra range request.
-            restore();
-            return { waiting: true, restore() {} };
-        } catch (error) { restore(); throw error; }
+            if (option) {
+                preparation.phase = 'ready';
+                return { option, restore: preparation.restore };
+            }
+            // Keep the lazily built native panel alive for a bounded async read;
+            // closing it immediately can destroy options before they are built.
+            preparation.phase = 'pending';
+            preparation.deadline = Date.now() + 1_500;
+            return { waiting: true };
+        } catch {
+            preparation.phase = 'failed';
+            preparation.restore();
+            preparation.nextAt = Date.now() + 500;
+            return { waiting: true };
+        }
     }
 
     function noticeContentPlayback(state, candidate) {
-        if (!state || state.playbackStarted || !state.id || navigating ||
+        if (!state || state.manualOverride || state.playbackStarted || !state.id || suspended || navigating ||
             !['waiting', 'expired'].includes(state.phase)) return;
         try {
             if (playerVideoId(candidate) !== state.id ||
@@ -333,11 +414,12 @@
     }
 
     function probe(state) {
-        if (session !== state || state.phase !== 'waiting' || navigating) return;
+        if (session !== state || state.manualOverride || state.phase !== 'waiting' || suspended || navigating) return;
         const candidate = findPlayer();
         const detectedId = urlVideoId() || playerVideoId(candidate);
         if (detectedId && detectedId !== state.id) { refresh(); return; }
         noticeContentPlayback(state, candidate);
+        if (candidate?.classList.contains('ad-showing') || candidate?.classList.contains('ad-interrupting')) state.readyMedia = null;
         if (Date.now() >= state.deadline || state.probes >= MAX_PROBES) {
             finish(state, 'expired');
             if (state.id) console.warn('[YouTube Default Quality] 本轮等待超时；首次主视频播放仍可触发一次就绪检查。');
@@ -347,9 +429,9 @@
         const retryDelay = Math.min(500 * (2 ** (state.probes - 1)), 2_000);
         bindPlayer(typeof candidate?.getVideoData === 'function' ? candidate : null);
         try {
+            if (typeof candidate?.getVideoData === 'function' && candidate.getVideoData()?.isAd) state.readyMedia = null;
             if (typeof candidate?.getVideoData === 'function' &&
                 typeof candidate.getAvailableQualityLevels === 'function' &&
-                typeof candidate.setPlaybackQualityRange === 'function' &&
                 matches(state, candidate) &&
                 !candidate.classList.contains('ad-showing') &&
                 !candidate.classList.contains('ad-interrupting') &&
@@ -381,7 +463,8 @@
                     if (Date.now() < pending.checkAt) {
                         schedule(state, pending.checkAt - Date.now()); return;
                     }
-                    const preference = candidate.getPreferredQuality?.();
+                    const preference = typeof candidate.getPreferredQuality === 'function' ?
+                        candidate.getPreferredQuality() : null;
                     if (preference === pending.target) { finish(state, 'applied'); return; }
                     if (preference !== 'auto' || state.nativeAttempts >= 3) {
                         finish(state, 'attempted');
@@ -389,30 +472,54 @@
                         return;
                     }
                     state.pendingNative = null;
-                    state.menuPrepared = false;
+                    // Menu preparation has its own per-visit bound.
                 }
                 const target = chooseQuality(candidate.getAvailableQualityLevels(), state.preferredHeight);
                 if (!target || !matches(state, candidate)) { schedule(state, retryDelay); return; }
                 const selection = prepareNativeSelection(state, candidate, target);
-                if (selection.waiting) { schedule(state, retryDelay); return; }
+                if (selection.unavailable) { finish(state, 'expired'); return; }
+                if (selection.waiting) {
+                    schedule(state, state.menu?.phase === 'pending' ?
+                        Math.min(retryDelay, Math.max(0, state.menu.deadline - Date.now())) : retryDelay);
+                    return;
+                }
                 try {
+                    // Menus may initialize through synchronous player callbacks.
+                    // Revalidate both identity and actual availability afterwards.
+                    if (chooseQuality(candidate.getAvailableQualityLevels(), state.preferredHeight) !== target) {
+                        schedule(state, retryDelay); return;
+                    }
                     if (!matches(state, candidate)) { schedule(state, retryDelay); return; }
+                    if (selection.option && (!selection.option.isConnected ||
+                        selection.option.closest(PLAYER_SELECTOR) !== candidate)) {
+                        schedule(state, retryDelay); return;
+                    }
                     // Block synchronous player events during the action. A
                     // failed native Auto selection may wait for confirmation;
                     // range calls and thrown actions are never repeated.
-                    finish(state, 'attempted');
+                    state.phase = 'attempted';
+                    cancelTimer();
                     if (selection.option) {
                         state.nativeAttempts = (state.nativeAttempts || 0) + 1;
                         selection.option.click();
-                    } else candidate.setPlaybackQualityRange(target, target);
-                    const preference = candidate.getPreferredQuality?.();
+                    } else {
+                        if (typeof candidate.setPlaybackQualityRange !== 'function') {
+                            finish(state, 'attempted'); return;
+                        }
+                        candidate.setPlaybackQualityRange(target, target);
+                    }
+                    if (session !== state || state.manualOverride || suspended || navigating) return;
+                    const preference = typeof candidate.getPreferredQuality === 'function' ?
+                        candidate.getPreferredQuality() : null;
+                    if (session !== state || state.manualOverride || suspended || navigating) return;
                     if (preference === target) {
-                        state.phase = 'applied';
+                        finish(state, 'applied');
                     } else if (selection.option && preference === 'auto') {
                         state.phase = 'waiting';
                         state.pendingNative = { target, checkAt: Date.now() + 1_000 };
                         schedule(state, 1_000);
                     } else {
+                        finish(state, 'attempted');
                         console.warn('[YouTube Default Quality] 已请求画质，未确认首选档位；不重复设置。');
                     }
                     return;
@@ -422,6 +529,7 @@
             // A setter may mutate and then throw. Retrying it could override a user
             // choice, so only read/readiness failures are eligible for retries.
             if (state.phase !== 'waiting') {
+                finish(state, 'attempted');
                 console.warn('[YouTube Default Quality] 设置接口异常；为保护手动选择，不再重试。', error);
                 return;
             }
@@ -430,16 +538,43 @@
     }
 
     function yieldToUser(event) {
-        if (!event.isTrusted || !(event.target instanceof Element)) return;
-        const option = event.target.closest('.ytp-quality-menu [role="menuitemradio"]');
-        if (!option || option.getAttribute('aria-disabled') === 'true') return;
+        if (!event.isTrusted || suspended || !(event.target instanceof Element)) return;
+        // A user can focus Search or another control while a menu is being built.
+        // Their input cancels our temporary UI ownership, even if it isn't itself
+        // a quality selection. Tab/arrow keys still do not lock manualOverride.
+        if (session?.menu?.phase === 'pending') {
+            session.menu.userInteraction = true;
+            session.menu.restore?.();
+            session.menu.phase = 'failed';
+            session.menu.nextAt = Date.now() + 500;
+        }
         if (event.type === 'keydown' && !['Enter', ' ', 'Spacebar'].includes(event.key)) return;
         if (event.type === 'pointerdown' && event.button !== 0) return;
+        const option = event.target.closest('.ytp-quality-menu [role="menuitemradio"]');
+        const owner = event.target.closest(PLAYER_SELECTOR);
+        if (!owner) return;
+        // Pointer/keyboard interaction during our async preparation belongs to the
+        // user. Remove temporary hiding without toggling or stealing their focus.
+        if (session?.menu?.player === owner && event.target.closest('.ytp-settings-menu, .ytp-settings-button')) {
+            session.menu.userInteraction = true;
+            session.menu.restore?.();
+            if (session.menu.phase === 'pending') {
+                session.menu.phase = 'failed';
+                session.menu.nextAt = Date.now() + 500;
+            }
+        }
+        if (!option || option.getAttribute('aria-disabled') === 'true') return;
+        const expected = urlVideoId();
+        const ownerId = playerVideoId(owner);
+        if (expected && ownerId && expected !== ownerId) return;
         refresh();
-        if (!player?.contains(option)) return;
-        // Opening Settings, viewing Auto (1080p), or moving keyboard focus is not
-        // a manual quality choice. Only activating a quality option yields control.
-        if (session && ['waiting', 'expired'].includes(session.phase)) finish(session, 'manual');
+        // Even before APIs attach, an actual choice on the current URL must win.
+        // A known different player's choice must never lock the new URL's visit.
+        if (!session || (expected ? session.id !== expected :
+            ownerId ? session.id !== ownerId : owner !== findPlayer())) return;
+        session.manualOverride = true;
+        if (!session.id) session.manualPlayer = owner;
+        finish(session, 'manual');
     }
 
     for (const name of ['pointerdown', 'click', 'keydown']) {
@@ -448,28 +583,34 @@
     document.addEventListener('yt-navigate-start', () => {
         navigating = true;
         cancelTimer();
+        session?.menu?.restore?.();
     });
     document.addEventListener('yt-navigate-finish', () => {
         navigating = false;
         refresh();
     });
     for (const name of ['DOMContentLoaded', 'yt-page-data-updated', 'yt-player-updated']) {
-        document.addEventListener(name, refresh);
+        document.addEventListener(name, requestRefresh);
     }
     // Media events do not bubble. Capture them to notice a new/rebuilt player,
     // including playlist/autoplay transitions. Terminal sessions never write again.
     for (const name of ['loadstart', 'loadedmetadata', 'canplay', 'playing']) {
         document.addEventListener(name, event => {
             if (!(event.target instanceof HTMLVideoElement)) return;
+            const owner = event.target.closest(PLAYER_SELECTOR);
+            if (!owner) return;
+            if (owner !== player) { requestRefresh(); return; }
             if (name === 'loadstart' && session?.phase === 'waiting') session.readyMedia = null;
-            refresh();
+            requestRefresh();
         }, true);
     }
-    window.addEventListener('popstate', refresh);
+    window.addEventListener('popstate', requestRefresh);
     // Chromium's committed-entry event also covers pushState/replaceState without
     // patching History, in case a transition omits YouTube's navigation events.
-    window.navigation?.addEventListener('currententrychange', refresh);
-    window.addEventListener('pageshow', () => { navigating = false; refresh(); });
-    window.addEventListener('pagehide', () => { cancelTimer(); bindPlayer(null); });
+    window.navigation?.addEventListener('currententrychange', requestRefresh);
+    window.addEventListener('pageshow', () => { suspended = false; navigating = false; refresh(); });
+    window.addEventListener('pagehide', () => {
+        suspended = true; cancelTimer(); session?.menu?.restore?.(); bindPlayer(null);
+    });
     refresh();
 })();

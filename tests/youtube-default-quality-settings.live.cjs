@@ -97,7 +97,7 @@ const path = require('node:path');
             assert.ok(!result.checked.some(text => /Auto/.test(text)));
             await page.locator('#movie_player .ytp-panel-back-button:visible').first().click();
             result.qualitySummary = await page.locator('.ytp-settings-menu .ytp-menuitem').filter({ hasText: /^Quality/ }).innerText();
-            assert.match(result.qualitySummary.replace(/\s+/g, ' '), new RegExp(`^Quality\\s*${fixedHeight}p`));
+            assert.match(result.qualitySummary.replace(/\s+/g, ' ').trim(), new RegExp(`^Quality\\s*${fixedHeight}p`));
             assert.ok(!result.qualitySummary.includes('Auto'));
             await button.click();
             report.checks.push({ savedHeight: height, expected, result });
