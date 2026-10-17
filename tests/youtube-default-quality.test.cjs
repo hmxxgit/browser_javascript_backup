@@ -19,7 +19,7 @@ async function setup(options = {}) {
     await page.clock.install();
     await page.route('https://www.youtube.com/**', route => route.fulfill({
         contentType: 'text/html',
-        body: '<div id="movie_player"><video></video><button class="ytp-settings-button">Settings</button><div class="ytp-settings-menu"><button>480p</button></div></div>',
+        body: '<div id="movie_player"><video></video><button class="ytp-settings-button">Settings</button><div class="ytp-settings-menu"><div class="ytp-quality-menu"><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 Premium</span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 <sup>HD</sup></span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">480p</span></button><button role="menuitemradio" aria-checked="true"><span class="ytp-menuitem-label">Auto</span></button></div></div></div>',
     }));
     await page.goto(`https://www.youtube.com/watch?v=${A}`);
     await page.evaluate(({ A, options }) => {
@@ -27,7 +27,19 @@ async function setup(options = {}) {
         window.writes = [];
         window.reads = 0;
         window.oldSetterCalls = 0;
+        window.nativeActions = 0;
+        window.settingsClicks = 0;
         window.buses = [];
+        document.querySelector('.ytp-settings-button').addEventListener('click', () => { settingsClicks += 1; });
+        for (const [index, item] of [...document.querySelectorAll('[role="menuitemradio"]')].entries()) {
+            const quality = ['premium1080', 'hd1080', 'large', 'auto'][index];
+            item.addEventListener('click', () => {
+                nativeActions += 1;
+                model.preferred = quality;
+                writes.push({ id: model.id, min: quality, max: quality });
+                for (const radio of document.querySelectorAll('[role="menuitemradio"]')) radio.setAttribute('aria-checked', String(radio === item));
+            });
+        }
         window.installPlayer = (replace = false) => {
             let p = document.getElementById('movie_player');
             if (replace) { const next = p.cloneNode(true); p.replaceWith(next); p = next; }
@@ -51,6 +63,12 @@ async function setup(options = {}) {
                 return model.levels;
             };
             p.getPreferredQuality = () => model.preferred || 'auto';
+            p.getPlaybackQuality = () => model.playback || 'unknown';
+            if (model.nativeMenu) p.getAvailableQualityData = () => [
+                { quality: 'hd1080', qualityLabel: '1080p60 Premium', paygatedQualityDetails: {} },
+                { quality: 'hd1080', qualityLabel: '1080p60', isPlayable: true },
+                { quality: 'large', qualityLabel: '480p', isPlayable: true },
+            ];
             p.setPlaybackQuality = () => { oldSetterCalls += 1; };
             p.setPlaybackQualityRange = (min, max) => {
                 writes.push({ id: model.id, min, max });
@@ -128,20 +146,77 @@ for (const manual of ['hd2160', 'large', 'auto']) {
     });
 }
 
-test('trusted Settings interaction before readiness yields immediately, including keyboard', async () => {
+test('trusted quality option activation before readiness yields, including keyboard', async () => {
     for (const keyboard of [false, true]) {
         const { page, context } = await setup({ levels: [] });
         try {
-            if (keyboard) await page.getByRole('button', { name: 'Settings', exact: true }).press('Enter');
-            else await page.getByRole('button', { name: 'Settings', exact: true }).click();
+            if (keyboard) await page.getByRole('menuitemradio', { name: '480p', exact: true }).press('Enter');
+            else await page.getByRole('menuitemradio', { name: '480p', exact: true }).click();
             await page.evaluate(() => { model.levels = ['hd1080']; model.preferred = 'large'; });
             await signals(page);
-            assert.deepEqual(await writes(page), []);
+            assert.deepEqual(await writes(page), [{ id: A, min: 'large', max: 'large' }]);
             await page.evaluate(id => navigate(id), B);
             await page.clock.runFor(1);
-            assert.equal((await writes(page)).length, 1);
+            assert.equal((await writes(page)).length, 2);
         } finally { await context.close(); }
     }
+});
+
+test('viewing Settings or navigating quality options does not cancel pending automatic selection', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('ArrowUp');
+        await page.evaluate(() => { model.levels = ['hd1080']; });
+        await page.clock.runFor(2_001);
+        assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
+    } finally { await context.close(); }
+});
+
+for (const preferred of ['auto', 'hd1080']) {
+    test(`already decoding 1080p with preference ${preferred} still gets an explicit setting on every visit`, async () => {
+        const { page, context } = await setup({ playback: 'hd1080', preferred });
+        try {
+            assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
+            await page.evaluate(id => navigate(id), B);
+            await page.clock.runFor(1);
+            await page.evaluate(id => navigate(id), A);
+            await page.clock.runFor(1);
+            assert.deepEqual((await writes(page)).map(w => w.id), [A, B, A]);
+            await signals(page);
+            assert.equal((await writes(page)).length, 3);
+        } finally { await context.close(); }
+    });
+}
+
+for (const hidden of [false, true]) {
+    test(`Auto 1080p uses an existing ${hidden ? 'hidden' : 'visible'} native option once and updates its checked state`, async () => {
+        const { page, context } = await setup({ levels: [], nativeMenu: true, playback: 'hd1080', preferred: 'auto' });
+        try {
+            await page.evaluate(hidden => {
+                if (hidden) document.querySelector('.ytp-settings-menu').style.display = 'none';
+                model.levels = ['hd2160', 'hd1080', 'large'];
+            }, hidden);
+            await page.clock.runFor(2_001);
+            assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
+            assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
+            assert.equal(await page.locator('[aria-checked="true"]').textContent(), '1080p60 HD');
+            assert.equal(await page.evaluate(() => nativeActions), 1);
+            assert.equal(await page.evaluate(() => settingsClicks), 0);
+            await signals(page);
+            assert.equal((await writes(page)).length, 1);
+        } finally { await context.close(); }
+    });
+}
+
+test('manual Auto remains Auto after native automatic selection, even while decoding 1080p', async () => {
+    const { page, context } = await setup({ nativeMenu: true, playback: 'hd1080', preferred: 'auto' });
+    try {
+        await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).click();
+        await signals(page);
+        assert.equal(await page.evaluate(() => model.preferred), 'auto');
+        assert.equal((await writes(page)).length, 2); // one script choice plus one user choice
+    } finally { await context.close(); }
 });
 
 test('recommendation/search SPA, playlist/autoplay, history and A-B-A each reset once', async () => {

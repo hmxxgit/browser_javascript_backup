@@ -47,8 +47,9 @@
 
 - 安装与更新使用上表的 `main` 分支链接；如曾安装测试分支版本，请从该链接覆盖安装，以便后续跟随正式版本更新。
 - 桌面版普通视频：有 1080P 就选 1080P，没有则选当前实际可用的最高画质；无需设置面板。
-- 每个视频至多调用一次设置接口，之后可用原生菜单改为 4K、480P 或自动；暂停、继续、拖动、全屏均不会重新设置。切换其他视频后重新生效，返回上一个视频也会重新应用默认策略。
-- 若在脚本等待播放器期间先操作设置菜单，会直接保留你的控制权，即使只是打开菜单。
+- 即使当前是 **Auto（1080P）**，进入新视频时也会明确选择固定 1080P；当前解码分辨率相同不会跳过设置。
+- 每个视频至多执行一次画质选择，之后可用原生菜单改为 4K、480P 或自动；暂停、继续、拖动、全屏均不会重新设置。切换其他视频后重新生效，返回上一个视频也会重新应用默认策略。
+- 等待期间仅打开设置、查看画质或移动焦点不会取消默认设置；实际选择画质（包括 Auto）才交还控制权。
 - 播放器未就绪时有限等待，最多 45 秒 / 30 次检查；接口异常或没有确认成功时，不重复写入画质。超时后需要切换视频或刷新才会重新尝试。
 - 不处理 Shorts、直播、首播、嵌入式播放器；直播回放也保守跳过。依赖 YouTube 非公开接口，网站更新可能失效。[技术说明、测试记录与限制](docs/youtube-default-quality.md)。
 
@@ -82,6 +83,8 @@ node --check youtube-default-quality.user.js
 测试使用 Playwright 和本机 Microsoft Edge，在离线页面样例上运行，不访问真实账号。使用 Chrome：`X_UI_BROWSER=chrome npm test`。
 
 YouTube 的可选联网检查单独运行：`node tests/youtube-default-quality.live.cjs`，或 `X_UI_BROWSER=chrome node tests/youtube-default-quality.live.cjs`。它使用独立临时浏览器环境访问公开视频，不登录账号；不计入 `npm test`。
+
+Auto（1080P）专项回归：`node tests/youtube-default-quality-auto.live.cjs`，使用 `X_UI_BROWSER=chrome` 可改用 Chrome，检查固定档位的原生勾选状态及之后手动选择 Auto 的保护。
 
 X 界面精简思路参考 [Minimal Twitter](https://github.com/typefully/minimal-twitter) 和 [Control Panel for Twitter](https://github.com/insin/control-panel-for-twitter)；脚本独立实现，不引入外部运行时。
 

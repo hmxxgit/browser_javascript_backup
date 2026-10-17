@@ -29,7 +29,7 @@ const snapshot = page => page.evaluate(() => {
 async function nativeQuality(page, label) {
     await page.locator('#movie_player').hover();
     const menu = page.locator('.ytp-settings-menu');
-    if (!await menu.isVisible()) await page.locator('.ytp-settings-button').click();
+    if (await page.locator('.ytp-settings-button').getAttribute('aria-expanded') !== 'true') await page.locator('.ytp-settings-button').click();
     if (!await page.locator('.ytp-quality-menu').isVisible()) {
         await page.locator('.ytp-settings-menu .ytp-menuitem').filter({ hasText: /^Quality/ }).click();
     }
@@ -56,6 +56,13 @@ async function nativeQuality(page, label) {
         await page.evaluate(() => {
             window.qualityWrites = [];
             window.qualityEvents = {};
+            document.addEventListener('click', event => {
+                const option = event.target.closest?.('#movie_player .ytp-quality-menu [role="menuitemradio"]');
+                if (!event.isTrusted && option) qualityWrites.push({
+                    id: document.getElementById('movie_player').getVideoData().video_id,
+                    action: 'native-option', label: option.textContent.trim(),
+                });
+            }, true);
             for (const name of ['yt-navigate-start', 'yt-navigate-finish', 'yt-page-data-updated', 'yt-player-updated']) {
                 document.addEventListener(name, () => { qualityEvents[name] = (qualityEvents[name] || 0) + 1; });
             }

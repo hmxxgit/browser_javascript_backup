@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Default Quality (1080p once per video)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.0
+// @version      1.0.1
 // @description  新视频优先 1080P，否则选实际最高画质；仅设置一次，随后尊重用户选择。
 // @match        https://www.youtube.com/*
 // @run-at       document-start
@@ -111,6 +111,26 @@
             candidate.getPlayerResponse()?.videoDetails?.videoId === state.id;
     }
 
+    function nativeQualityOption(candidate, target) {
+        if (typeof candidate.getAvailableQualityData !== 'function') return null;
+        const data = candidate.getAvailableQualityData();
+        if (!Array.isArray(data)) return null;
+        const normalize = text => text.replace(/\s+/g, ' ').trim();
+        // Match current, playable, non-paygated labels exactly. Do not guess a menu
+        // index, translate "Auto", or accidentally choose an enhanced-bitrate tier.
+        const labels = new Set(data.filter(q => q.quality === target && q.isPlayable !== false &&
+            !q.paygatedQualityDetails && typeof q.qualityLabel === 'string').map(q => normalize(q.qualityLabel)));
+        for (const item of candidate.querySelectorAll('.ytp-quality-menu [role="menuitemradio"]')) {
+            if (item.getAttribute('aria-disabled') === 'true') continue;
+            const label = item.querySelector('.ytp-menuitem-label')?.cloneNode(true);
+            if (!label) continue;
+            // HD/4K/HDR badges are presentation, not part of qualityLabel.
+            for (const badge of label.querySelectorAll('sup')) badge.remove();
+            if (labels.has(normalize(label.textContent))) return item;
+        }
+        return null;
+    }
+
     function probe(state) {
         if (session !== state || state.phase !== 'waiting' || navigating) return;
         if (watchId() !== state.id) { refresh(); return; }
@@ -139,15 +159,23 @@
                     return;
                 }
                 const target = chooseQuality(candidate.getAvailableQualityLevels());
+                const option = target ? nativeQualityOption(candidate, target) : null;
                 if (target && matches(state, candidate)) {
                     // Lock BEFORE calling: synchronous quality events, errors, or
                     // delayed acknowledgements must never cause a second write.
                     finish(state, 'attempted');
-                    candidate.setPlaybackQualityRange(target, target);
+                    // A range-only call can leave the native menu on Auto when
+                    // Auto already decodes the target resolution (no quality-change
+                    // event occurs). An existing native option applies the fixed
+                    // choice AND refreshes its checked state in one action. Hidden
+                    // options work too: do not open menus or click Settings.
+                    if (option) option.click();
+                    else candidate.setPlaybackQualityRange(target, target);
                     // Preference acknowledgement is not proof that decoded frames
                     // already have this resolution. Read only; never fight ABR.
                     if (typeof candidate.getPreferredQuality === 'function' &&
-                        candidate.getPreferredQuality() === target) {
+                        candidate.getPreferredQuality() === target &&
+                        (!option || option.getAttribute('aria-checked') === 'true')) {
                         state.phase = 'applied';
                     } else {
                         console.warn('[YouTube Default Quality] 已请求画质，未确认首选档位；不重复设置。');
@@ -168,10 +196,13 @@
 
     function yieldToUser(event) {
         if (!event.isTrusted || !(event.target instanceof Element)) return;
-        if (!event.target.closest('#movie_player .ytp-settings-button, #movie_player .ytp-settings-menu')) return;
+        const option = event.target.closest('#movie_player .ytp-quality-menu [role="menuitemradio"]');
+        if (!option || option.getAttribute('aria-disabled') === 'true') return;
+        if (event.type === 'keydown' && !['Enter', ' ', 'Spacebar'].includes(event.key)) return;
+        if (event.type === 'pointerdown' && event.button !== 0) return;
         refresh();
-        // Conservatively yield even when the user merely opens Settings before
-        // readiness. This covers mouse, touch and keyboard without language labels.
+        // Opening Settings, viewing Auto (1080p), or moving keyboard focus is not
+        // a manual quality choice. Only activating a quality option yields control.
         if (session?.phase === 'waiting') finish(session, 'manual');
     }
 
