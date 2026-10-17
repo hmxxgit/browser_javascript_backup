@@ -7,7 +7,7 @@
 3. 刷新 YouTube，播放桌面版普通视频。无需额外配置；每次切换到不同的视频，重新应用默认策略。
 4. 同一 YouTube 页面只启用一个画质控制脚本。停用时，在 Tampermonkey 关闭本脚本并刷新页面。
 
-安装 PR 分支版本时，请在该分支打开脚本并点击 Raw；README 的 main 一键安装链接需要 PR 合并后才可使用。
+正式安装与更新使用 [main 分支安装链接](https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/youtube-default-quality.user.js)。如曾安装 PR / 测试分支版本，请从该链接覆盖安装，以便后续跟随正式版本更新。
 
 ## 画质策略和状态
 
