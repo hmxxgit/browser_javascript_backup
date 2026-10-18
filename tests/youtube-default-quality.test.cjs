@@ -36,7 +36,7 @@ async function setup(options = {}) {
     await page.route('**/*', route => route.fulfill({
         contentType: 'text/html',
         ...(options.trustedTypes ? { headers: { 'Content-Security-Policy': "require-trusted-types-for 'script'" } } : {}),
-        body: '<div id="movie_player" data-test-player><video></video><button class="ytp-settings-button">Settings</button><div class="ytp-settings-menu"><div class="ytp-quality-menu"><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 Premium</span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 <sup>HD</sup></span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">480p</span></button><button role="menuitemradio" aria-checked="true"><span class="ytp-menuitem-label">Auto</span></button></div></div></div>',
+        body: '<div id="movie_player" data-test-player><video></video><button class="ytp-settings-button">Settings</button><div class="ytp-settings-menu"><div class="ytp-menuitem"><span class="ytp-menuitem-label">Subtitles/CC</span><span class="ytp-menuitem-content">Auto-translate</span></div><div class="ytp-menuitem"><span class="ytp-menuitem-label">Quality</span><span class="ytp-menuitem-content" id="quality-summary">Auto (1080p HD)</span></div><div class="ytp-quality-menu"><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 Premium</span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">1080p60 <sup>HD</sup></span></button><button role="menuitemradio" aria-checked="false"><span class="ytp-menuitem-label">480p</span></button><button role="menuitemradio" aria-checked="true"><span class="ytp-menuitem-label">Auto</span></button></div></div></div>',
     }));
     await page.goto(`${options.origin || 'https://www.youtube.com'}${options.route || `/watch?v=${A}`}`);
     await page.evaluate(({ A, options }) => {
@@ -77,6 +77,11 @@ async function setup(options = {}) {
                 if (!model.nativeMisses || nativeActions > model.nativeMisses) model.preferred = quality;
                 writes.push({ id: model.id, min: quality, max: quality });
                 for (const radio of document.querySelectorAll('[role="menuitemradio"]')) radio.setAttribute('aria-checked', String(radio === item));
+                if (!model.staleSummary) {
+                    const text = item.querySelector('.ytp-menuitem-label').textContent.replace(/\s+/g, ' ').trim();
+                    const update = () => { document.getElementById('quality-summary').textContent = text; };
+                    if (model.summaryDelay) setTimeout(update, model.summaryDelay); else update();
+                }
             });
         }
         window.menuOpens = 0;
@@ -277,13 +282,37 @@ for (const hidden of [false, true]) {
     });
 }
 
-test('manual Auto remains Auto after native automatic selection, even while decoding 1080p', async () => {
+test('manual Auto is rejected and the fixed default is reapplied', async () => {
     const { page, context } = await setup({ nativeMenu: true, playback: 'hd1080', preferred: 'auto' });
     try {
         await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).click();
-        await signals(page);
-        assert.equal(await page.evaluate(() => model.preferred), 'auto');
-        assert.equal((await writes(page)).length, 2); // one script choice plus one user choice
+        await page.clock.runFor(10_000);
+        assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), false);
+        assert.equal((await writes(page)).at(-1).min, 'hd1080'); // user Auto plus the re-applied fixed tier
+        assert.equal((await writes(page)).length, 3);
+    } finally { await context.close(); }
+});
+
+test('a native quality summary still showing Auto is not accepted as applied', async () => {
+    const { page, context } = await setup({ nativeMenu: true, staleSummary: true });
+    try {
+        await page.clock.runFor(10_000);
+        const state = await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state);
+        assert.notEqual(state.phase, 'applied');
+        assert.ok(['attempted', 'expired'].includes(state.phase));
+        assert.ok((await page.evaluate(() => nativeActions)) >= 2); // native retry was attempted
+        assert.equal(await page.locator('#quality-summary').innerText(), 'Auto (1080p HD)');
+    } finally { await context.close(); }
+});
+
+test('a delayed native summary update is accepted without another click', async () => {
+    const { page, context } = await setup({ nativeMenu: true, summaryDelay: 500 });
+    try {
+        await page.clock.runFor(5_000);
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.phase), 'applied');
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        assert.equal(await page.locator('#quality-summary').innerText(), '1080p60 HD');
     } finally { await context.close(); }
 });
 
@@ -807,6 +836,22 @@ test('the reapply menu command clears a manual lock for the current video', asyn
     } finally { await context.close(); }
 });
 
+test('the reapply command resets the native attempt budget after a bounded failure', async () => {
+    const { page, context } = await setup({ nativeMenu: true, nativeMisses: 99 });
+    try {
+        await page.clock.runFor(10_000);
+        assert.ok(['attempted', 'expired'].includes(await page.evaluate(() =>
+            __youtubeDefaultQualityOnceV1__.state.phase)));
+        await page.evaluate(() => {
+            model.nativeMisses = 0;
+            gmMenus.get('重新应用画质（覆盖本视频手动选择）')();
+        });
+        await page.clock.runFor(5_000);
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.phase), 'applied');
+        assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
+    } finally { await context.close(); }
+});
+
 test('configuration opens and saves under YouTube-style Trusted Types enforcement', async () => {
     const { page, context, errors } = await setup({ trustedTypes: true });
     try {
@@ -972,15 +1017,18 @@ for (const nativeMisses of [1, 99]) {
     });
 }
 
-test('manual Auto during native confirmation cancels every pending retry', async () => {
+test('manual Auto during native confirmation cannot become a terminal manual state', async () => {
     const { page, context } = await setup({ nativeMenu: true, preferred: 'auto', nativeMisses: 99 });
     try {
-        await page.clock.runFor(100);
         assert.equal(await page.evaluate(() => nativeActions), 1);
         await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('Enter');
-        await signals(page);
-        await page.clock.runFor(60_000);
-        assert.equal(await page.evaluate(() => nativeActions), 2); // one script click, one user action
+        await page.clock.runFor(10_000);
+        const state = await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state);
+        assert.equal(state.manualOverride, false);
+        assert.notEqual(state.phase, 'manual');
+        assert.ok((await page.evaluate(() => nativeActions)) > 2); // Auto triggers fixed retries
+        // The fake player never acknowledges, so the bounded attempts stop without a manual lock.
+        assert.ok(['attempted', 'expired'].includes(state.phase));
     } finally { await context.close(); }
 });
 
@@ -1123,32 +1171,35 @@ test('pagehide remains suspended even if document lifecycle events arrive afterw
 });
 
 
-test('manual selection on a routeless player before API initialization survives first identity discovery', async () => {
+test('manual Auto on a routeless player is rejected before and after identity discovery', async () => {
     const { page, context } = await setup({ route: '/@channel/live', notReady: true, nativeMenu: true });
     try {
         await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('Enter');
         await page.evaluate(() => { installPlayer(); signal('yt-player-updated'); });
         await signals(page);
-        assert.equal((await writes(page)).length, 1);
-        assert.equal(await page.evaluate(() => model.preferred), 'auto');
+        assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), false);
+        assert.equal((await writes(page)).length, 2); // user Auto plus re-applied fixed 1080p
         await page.evaluate(id => navigate(id), B);
         await page.clock.runFor(5_000);
-        assert.equal((await writes(page)).length, 2);
+        assert.equal((await writes(page)).length, 3);
+        assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
     } finally { await context.close(); }
 });
 
-test('viewing an already-open settings panel does not let preparation close it or lock manual override', async () => {
+test('an already-open settings panel does not block the fixed selection', async () => {
     const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true, mediaReady: 0 });
     try {
         await page.locator('.ytp-settings-button').click();
         await page.evaluate(() => { model.mediaReady = 4; playerSignal('onStateChange'); });
         await page.clock.runFor(5_000);
-        assert.equal(await page.evaluate(() => menuOpens), 0);
-        assert.equal(await page.locator('.ytp-settings-button').getAttribute('aria-expanded'), 'true');
-        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), false);
-        await page.locator('.ytp-settings-button').click();
-        await page.clock.runFor(5_000);
+        assert.equal(await page.evaluate(() => menuOpens), 1);
         assert.equal(await page.evaluate(() => nativeActions), 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), false);
+        assert.equal(await page.locator('#quality-summary').innerText(), '1080p60 HD');
+        // The user's own panel is not toggled closed by the script.
+        assert.equal(await page.locator('.ytp-settings-button').getAttribute('aria-expanded'), 'true');
     } finally { await context.close(); }
 });
 
@@ -1162,9 +1213,11 @@ test('async preparation is cancelled on trusted settings interaction without ste
         assert.equal(await page.evaluate(() => settingsClicks), 1); // the user's own click only
         assert.equal(await page.evaluate(() => document.activeElement.className), 'ytp-settings-button');
         await page.clock.runFor(800);
-        await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('Enter');
+        await page.getByRole('menuitemradio', { name: '480p', exact: true }).press('Enter');
         await signals(page);
-        assert.equal(await page.evaluate(() => nativeActions), 1); // user Auto only
+        assert.equal(await page.evaluate(() => nativeActions), 1); // the user's fixed choice only
+        assert.equal(await page.evaluate(() => model.preferred), 'large');
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), true);
     } finally { await context.close(); }
 });
 

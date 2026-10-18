@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      2.3.0
-// @description  可配置首选画质，不足时向下匹配；固定画质确认后不再干预，尊重用户手动选择。
+// @version      2.4.0
+// @description  可配置首选画质，不足时向下匹配；进入视频强制固定档位，不使用 Auto。
 // @author       hmxxgit
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
@@ -285,6 +285,7 @@
         session.pendingNative = null;
         session.playbackStarted = false;
         session.menuAttempts = 0;
+        session.nativeAttempts = 0;
         endNavigation();
         cancelTimer();
         refresh();
@@ -351,6 +352,47 @@
             if (text === lower || text.startsWith(`${lower} `)) return item;
         }
         return /^(auto|自动)(\s*\([^)]*\))?$/i.test(text) ? item : null;
+    }
+
+    function isAutoMenuItem(item) {
+        const label = item.querySelector('.ytp-menuitem-label') || item;
+        const text = normalizeLabel(label.textContent || '');
+        return /^(auto|自动)(\s*\([^)]*\))?$/i.test(text);
+    }
+
+    // getPreferredQuality() can report the requested fixed tier while YouTube's
+    // own Settings summary still says "Auto". Read the user-visible summary so
+    // a false positive does not end the visit on Auto.
+    function qualitySummaryText(candidate) {
+        const menu = candidate.querySelector('.ytp-settings-menu');
+        if (!menu) return null;
+        for (const item of menu.querySelectorAll('.ytp-menuitem')) {
+            if (item.closest('.ytp-quality-menu')) continue;
+            const content = item.querySelector('.ytp-menuitem-content');
+            const text = normalizeLabel(content?.textContent || '');
+            if (!text) continue;
+            // Match only "Auto" with an optional resolution suffix, or a
+            // resolution label. Do not mistake captions such as "Auto-translate"
+            // for the Quality summary.
+            if (/^(auto|自动)(?:\s*\([^)]*\))?$/i.test(text) ||
+                /^\d{3,4}p(?:\d{2})?(?:\s|$)/i.test(text)) return text;
+        }
+        return null;
+    }
+
+    function nativeCheckedQuality(candidate) {
+        const checked = candidate.querySelector('.ytp-quality-menu [role="menuitemradio"][aria-checked="true"]');
+        if (!checked) return null;
+        const label = checked.querySelector('.ytp-menuitem-label') || checked;
+        return normalizeLabel(label.textContent || '');
+    }
+
+    // null means the summary is not available yet; true/false is authoritative.
+    function summaryMatches(summary, target) {
+        if (summary === null) return null;
+        if (/^(auto|自动)(?:\s|\(|$)/i.test(summary)) return false;
+        const height = qualityHeight(target);
+        return height > 0 ? summary.toLowerCase().includes(`${height}p`) : true;
     }
 
     function matches(state, candidate) {
@@ -426,18 +468,21 @@
         if ((state.menuAttempts || 0) >= 2) return { unavailable: true };
         const isExpanded = () => candidate.classList.contains('ytp-settings-shown') ||
             button.getAttribute('aria-expanded') === 'true';
-        // A user already viewing Settings owns its panel and focus. Existing
-        // quality options can be used, but do not replace their current panel.
-        if (isExpanded()) return { waiting: true };
-        preparation = state.menu = { player: candidate, target, phase: 'preparing' };
+        // An already-open Settings panel belongs to the user, but it must not
+        // block the fixed selection. openSettingsMenuItem switches that panel
+        // to the quality list; leave the panel open and never steal its focus.
+        const userPanel = isExpanded();
+        preparation = state.menu = { player: candidate, target, phase: 'preparing', userPanel };
         state.menuAttempts = (state.menuAttempts || 0) + 1;
         const previousFocus = document.activeElement;
         const attribute = 'data-yt-default-quality-preparing';
         const previousAttribute = candidate.getAttribute(attribute);
         const style = document.createElement('style');
         style.textContent = `[${attribute}] .ytp-settings-menu{visibility:hidden!important}`;
-        candidate.setAttribute(attribute, '');
-        candidate.append(style);
+        if (!userPanel) {
+            candidate.setAttribute(attribute, '');
+            candidate.append(style);
+        }
         let restored = false;
         preparation.restore = () => {
             if (restored) return;
@@ -449,7 +494,8 @@
                 // Restore only our untouched popup while it still belongs to the
                 // old content. Navigation-start/pagehide may clean it before the
                 // identity changes; a replacement/new identity is never toggled.
-                if (sameContent && !state.manualOverride && !preparation.userInteraction) {
+                if (sameContent && !state.manualOverride && !preparation.userInteraction &&
+                    !preparation.userPanel) {
                     for (let n = 0; n < 2 && isExpanded(); n++) button.click();
                 }
             } catch {
@@ -459,6 +505,7 @@
                 if (previousAttribute === null) candidate.removeAttribute(attribute);
                 else candidate.setAttribute(attribute, previousAttribute);
                 if (!preparation.userInteraction && !preparation.focusMoved &&
+                    !preparation.userPanel &&
                     !state.manualOverride && !navigating && !suspended &&
                     session === state && candidate.isConnected &&
                     (!urlVideoId() || urlVideoId() === state.id) && playerVideoId(candidate) === state.id &&
@@ -550,8 +597,8 @@
                 // One policy for every content type: live, premiere, replay,
                 // Shorts and embeds. Only actual quality availability matters.
                 // A native click can run while YouTube is still replacing its
-                // content controller. Only an explicit Auto readback permits a
-                // bounded retry; success or a manual choice permanently ends it.
+                // content controller. Verify both the preferred quality and the
+                // user-visible Settings summary before declaring success.
                 if (state.pendingNative) {
                     const pending = state.pendingNative;
                     if (Date.now() < pending.checkAt) {
@@ -559,14 +606,23 @@
                     }
                     const preference = typeof candidate.getPreferredQuality === 'function' ?
                         candidate.getPreferredQuality() : null;
-                    if (preference === pending.target) { finish(state, 'applied'); return; }
-                    if (preference !== 'auto' || state.nativeAttempts >= 3) {
+                    const summaryOk = summaryMatches(qualitySummaryText(candidate), pending.target);
+                    const checkedOk = summaryMatches(nativeCheckedQuality(candidate), pending.target);
+                    const mismatch = summaryOk === false || checkedOk === false;
+                    if (preference === pending.target && !mismatch) {
+                        finish(state, 'applied'); return;
+                    }
+                    if (state.nativeAttempts >= 3 ||
+                        (preference !== 'auto' && preference !== pending.target)) {
                         finish(state, 'attempted');
-                        console.warn('[YouTube Default Quality] 未确认固定画质；已停止有限尝试。' + RETRY_HINT);
+                        console.warn('[YouTube Default Quality] 未确认固定画质' +
+                            (mismatch ? '（界面仍显示 Auto）' : '') +
+                            '；已停止有限尝试。' + RETRY_HINT);
                         return;
                     }
+                    // The UI still shows Auto or a different tier even though the
+                    // preferred quality looks fixed; prepare the native menu again.
                     state.pendingNative = null;
-                    // Menu preparation has its own per-visit bound.
                 }
                 const target = chooseQuality(candidate.getAvailableQualityLevels(), state.preferredHeight);
                 if (!target || !matches(state, candidate)) { schedule(state, retryDelay); return; }
@@ -596,22 +652,24 @@
                     if (selection.option) {
                         state.nativeAttempts = (state.nativeAttempts || 0) + 1;
                         selection.option.click();
-                    } else {
-                        if (typeof candidate.setPlaybackQualityRange !== 'function') {
-                            finish(state, 'attempted'); return;
-                        }
-                        candidate.setPlaybackQualityRange(target, target);
-                    }
-                    if (session !== state || state.manualOverride || suspended || navigating) return;
-                    const preference = typeof candidate.getPreferredQuality === 'function' ?
-                        candidate.getPreferredQuality() : null;
-                    if (session !== state || state.manualOverride || suspended || navigating) return;
-                    if (preference === target) {
-                        finish(state, 'applied');
-                    } else if (selection.option && preference === 'auto') {
+                        if (session !== state || state.manualOverride || suspended || navigating) return;
+                        // getPreferredQuality() may report the fixed target while
+                        // the native menu still says Auto. Defer the verdict to a
+                        // delayed check that also reads the visible summary.
                         state.phase = 'waiting';
                         state.pendingNative = { target, checkAt: Date.now() + 1_000 };
                         schedule(state, 1_000);
+                        return;
+                    }
+                    if (typeof candidate.setPlaybackQualityRange !== 'function') {
+                        finish(state, 'attempted'); return;
+                    }
+                    candidate.setPlaybackQualityRange(target, target);
+                    if (session !== state || state.manualOverride || suspended || navigating) return;
+                    const preference = typeof candidate.getPreferredQuality === 'function' ?
+                        candidate.getPreferredQuality() : null;
+                    if (preference === target) {
+                        finish(state, 'applied');
                     } else {
                         finish(state, 'attempted');
                         console.warn('[YouTube Default Quality] 已请求画质，未确认首选档位；不重复设置。' + RETRY_HINT);
@@ -673,6 +731,24 @@
         // A known different player's choice must never lock the new URL's visit.
         if (!session || (expected ? session.id !== expected :
             ownerId ? session.id !== ownerId : optionOwner !== findPlayer())) return;
+        if (isAutoMenuItem(option)) {
+            // The configured policy is always a fixed height. Auto is never a
+            // terminal choice, even when selected manually: re-apply the default.
+            session.menu?.restore?.();
+            session.menu = null;
+            session.manualOverride = false;
+            session.phase = 'waiting';
+            session.probes = 0;
+            session.deadline = Date.now() + WAIT_MS;
+            session.readyMedia = null;
+            session.pendingNative = null;
+            session.nativeAttempts = 0;
+            session.menuAttempts = 0;
+            cancelTimer();
+            schedule(session, 600);
+            console.info('[YouTube Default Quality] 已忽略 Auto，将重新应用固定画质。' + RETRY_HINT);
+            return;
+        }
         session.manualOverride = true;
         if (!session.id) session.manualPlayer = optionOwner;
         finish(session, 'manual');
@@ -720,7 +796,7 @@
         suspended = true; cancelTimer(); endNavigation(); session?.menu?.restore?.(); bindPlayer(null);
     });
     window[INSTANCE] = Object.freeze({
-        version: '2.3.0',
+        version: '2.4.0',
         // Read-only troubleshooting snapshot; never exposes GM storage or controls.
         get state() { return session ? { id: session.id, phase: session.phase,
             probes: session.probes, nativeAttempts: session.nativeAttempts || 0,

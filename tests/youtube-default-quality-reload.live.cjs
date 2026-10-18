@@ -28,7 +28,9 @@ async function openQuality(page) {
         await page.addInitScript({ content: source });
         const url = `https://www.youtube.com/watch?v=${videoId}`;
         await page.goto(url, { waitUntil: 'domcontentloaded' });
-        for (const [label, preferred] of [['480p', 'large'], ['Auto', 'auto']]) {
+        // Auto is no longer a terminal manual choice in 2.4.0; the base live
+        // test covers that policy. Reload is checked with a fixed manual tier.
+        for (const [label, preferred] of [['480p', 'large']]) {
             report.phase = `${label}: initial fixed quality`;
             await page.waitForFunction(() => document.getElementById('movie_player')?.getPreferredQuality?.() === 'hd1080');
             await openQuality(page);

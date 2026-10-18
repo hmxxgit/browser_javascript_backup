@@ -143,27 +143,30 @@ const snapshot = async page => {
                 console.error(`PASS: Auto (${before.playback}, decoded ${before.decodedHeight}p) becomes fixed 1080p, checked option and Quality summary verified`);
 
                 // Enter is a real user activation without a moving popup's
-                // pointer-position race; the controller must yield to it too.
+                // pointer-position race. 2.4.0 rejects Auto and re-applies the
+                // configured fixed tier instead of keeping a manual Auto state.
                 await page.locator('.ytp-quality-menu [role="menuitemradio"]').filter({ hasText: /^Auto/ }).press('Enter');
                 await page.evaluate(() => {
                     const p = document.getElementById('movie_player');
                     document.dispatchEvent(new Event('yt-navigate-finish'));
                     document.querySelector('#movie_player video').dispatchEvent(new Event('loadedmetadata'));
                     p.playVideo();
-                    p.pauseVideo();
                 });
-                await page.waitForFunction(() => document.getElementById('movie_player').getPlayerState() === 2);
+                await page.waitForFunction(() => document.getElementById('movie_player').getPreferredQuality() === 'hd1080', null, { timeout: 45_000 });
+                await page.waitForFunction(() => document.getElementById('movie_player').getPlayerState() === 1, null, { timeout: 45_000 });
+                await page.waitForFunction(() => window.__youtubeDefaultQualityOnceV1__?.state?.phase === 'applied', null, { timeout: 45_000 });
                 const manual = await snapshot(page);
-                assert.equal(manual.preferred, 'auto');
-                // YouTube's trusted Enter handler may itself dispatch an
-                // untrusted Auto click. Keep it in diagnostics, but it is the
-                // user's requested Auto action, not an extra fixed-tier write.
-                const fixedActions = manual.actions.filter(action => action.kind !== 'native' || !/^Auto/.test(action.label));
-                assert.equal(fixedActions.length, after.actions.length);
-                assert.equal(manual.controller.manualOverride, true);
-                assert.equal(manual.controller.phase, 'manual');
-                report.checks.push({ check: `manual Auto remains respected (${after.actions[0].kind} path)`, result: manual });
-                console.error('PASS: manual Auto remains respected');
+                assert.equal(manual.preferred, 'hd1080');
+                assert.equal(manual.controller.manualOverride, false);
+                assert.equal(manual.controller.phase, 'applied');
+                await openQuality(page);
+                await page.waitForFunction(() => [...document.querySelectorAll('.ytp-quality-menu [aria-checked="true"]')]
+                    .some(e => /^1080p/.test(e.textContent.trim())));
+                const manualFixed = await page.evaluate(() => [...document.querySelectorAll('.ytp-quality-menu [aria-checked="true"]')]
+                    .map(e => e.textContent.replace(/\s+/g, ' ').trim()));
+                assert.ok(!manualFixed.some(label => /^Auto/.test(label)));
+                report.checks.push({ check: `manual Auto is rejected and fixed 1080p is re-applied (${after.actions[0].kind} path)`, result: { manual, manualFixed } });
+                console.error('PASS: manual Auto is rejected and fixed 1080p is re-applied');
             } catch (error) {
                 report.lastState = await snapshot(page).catch(() => null);
                 throw error;
