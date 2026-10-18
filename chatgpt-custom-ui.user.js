@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.54
+// @version      1.4.55
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -900,17 +900,6 @@
     const modernMessageStyle = document.createElement("style");
     modernMessageStyle.setAttribute("data-tm-chatgpt-modern-message-css", "true");
     modernMessageStyle.textContent = `
-        /* 新版会话使用两层缓存高度：总高度与每轮消息高度。
-         * 正文字体、宽度或 DIL 图表改变后，发送下一问时旧高度可能
-         * 暂时小于已挂载内容，后续问题便会覆盖上一轮回复。
-         * 用内容固有高度作为下限，同时保护总滚动范围；保留原生
-         * 缓存高度及空占位节点，不改 React 的节点或内联测量值。
-         */
-        main [data-chatgpt-conversation-selection-target="true"] > div:has(> div > div > [data-turn-key]),
-        main [data-chatgpt-conversation-selection-target="true"] > div > div > div:has(> [data-turn-key]) {
-            min-height: min-content !important;
-        }
-
         main [data-markdown-text-style="assistant-message"],
         main [data-markdown-text-style="assistant-message"] p,
         main [data-markdown-text-style="assistant-message"] li,
@@ -1000,7 +989,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.54
+     * ChatGPT Custom UI v1.4.55
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -1304,22 +1293,6 @@
 
 
     style.textContent = `
-
-        /* =====================================================
-           A. 减少浏览器 Scroll Anchoring 干预
-           ===================================================== */
-
-        html,
-        body,
-        main,
-        [data-tm-chatgpt-scroller="true"] {
-
-            overflow-anchor:
-                none
-                !important;
-        }
-
-
 
         /* =====================================================
            B. 对话阅读模式：
@@ -2780,6 +2753,13 @@
             return null;
         }
 
+        // 新版会话由原生虚拟列表维护滚动和高度。输入框只改透明度与
+        // transform，不影响文档流；回写旧 scrollTop 会与流式输出、
+        // 原生定位和用户滚轮竞争。仅旧版页面保留显隐时的短暂补偿。
+        if (scroller.matches?.('.thread-scroll-container') ||
+            scroller.querySelector?.('[data-turn-key]')) {
+            return null;
+        }
 
         return {
 
@@ -2789,7 +2769,9 @@
                 scroller.scrollTop,
 
             scrollLeft:
-                scroller.scrollLeft
+                scroller.scrollLeft,
+            scrollHeight: scroller.scrollHeight,
+            pathname: location.pathname
         };
     }
 
@@ -2807,6 +2789,9 @@
             !state
             ||
             !state.scroller
+            || !state.scroller.isConnected
+            || state.pathname !== location.pathname
+            || state.scrollHeight !== state.scroller.scrollHeight
         ) {
             return;
         }
@@ -2893,6 +2878,12 @@
        十三、显示输入框
        ========================================================= */
 
+    // 用户开始滚动、拖动滚动条、输入或发送时，旧版补偿也必须立即让位。
+    for (const eventName of ['wheel', 'touchstart', 'pointerdown', 'keydown', 'submit']) {
+        document.addEventListener(eventName, () => { scrollLockGeneration += 1; },
+            { capture: true, passive: true });
+    }
+
     function showComposer() {
 
         /*
@@ -2932,7 +2923,7 @@
        十四、隐藏输入框
        ========================================================= */
 
-    function hideComposer() {
+    function hideComposer(preserveScroll = true) {
 
         // 点击/滚动隐藏后，DOM 更新不能复用发送时的底部鼠标位置来重新显示。
         // 只有下一次真实鼠标移动到触发区才允许 reveal。
@@ -2968,8 +2959,7 @@
         }
 
 
-        const scrollState =
-            captureScrollState();
+        const scrollState = preserveScroll ? captureScrollState() : null;
 
 
         composerVisible =
@@ -3702,7 +3692,8 @@
 
             // 仅向上滚动（deltaY < 0）时隐藏
             if (event.deltaY < 0) {
-                hideComposer();
+                // 滚轮默认动作尚未执行，不能锁回动作前的 scrollTop。
+                hideComposer(false);
             }
         },
 

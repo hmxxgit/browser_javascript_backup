@@ -2,75 +2,164 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const path = require('node:path');
+const script = path.join(__dirname, '..', 'chatgpt-custom-ui.user.js');
 
-test('mounted history keeps its full height when a new question reuses stale turn measurements', async () => {
-    const browser = await chromium.launch({ channel: process.env.X_UI_BROWSER || 'msedge', headless: true });
-    try {
-        const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-        // Structure observed in the live ChatGPT transcript: total cache ->
-        // flex column -> per-turn cache -> data-turn-key -> user and assistant.
-        await page.setContent(`<style>
-            body { margin:0; } .thread-scroll-container { height:700px; overflow:auto; }
+async function fixture(browser) {
+    const page = await browser.newPage({ viewport: { width:1280, height:800 } });
+    await page.route('https://chatgpt.com/**', route => route.fulfill({ contentType:'text/html', body:`
+        <style>
+            body { margin:0; } .thread-scroll-container { height:600px; overflow:auto; overflow-anchor:none; }
             .flex { display:flex; flex-direction:column; } .relative { position:relative; }
-            .shrink-0 { flex-shrink:0; } .question { height:60px; }
-            .answer { height:1800px; background:#123; color:white; }
+            .shrink-0 { flex-shrink:0; } .answer { height:1800px; }
+            form { position:fixed; bottom:0; height:90px; width:100%; background:white; }
         </style><main><div class="thread-scroll-container">
             <div data-chatgpt-conversation-selection-target="true">
-                <div id="total-cache" class="relative shrink-0" style="height:120px">
+                <div id="total-cache" class="relative shrink-0" style="height:3600px">
                     <div class="flex flex-col">
-                        <div id="first-cache" style="height:60px">
-                            <div data-turn-key="first"><div class="question">First question</div>
-                                <div id="first-answer" class="answer" data-markdown-text-style="assistant-message">Original answer</div>
-                            </div>
-                        </div>
-                        <div id="second-cache" style="height:60px">
-                            <div data-turn-key="second"><div class="question">Second question</div></div>
-                        </div>
+                        <div id="first-cache" style="height:1800px"><div data-turn-key="first">
+                            <div data-user-message-bubble="true">First question</div>
+                            <div id="first-answer" class="answer" data-markdown-text-style="assistant-message">Original history answer</div>
+                        </div></div>
+                        <div id="last-cache" style="height:1800px"><div data-turn-key="last">
+                            <div data-user-message-bubble="true">Next question</div>
+                            <div id="stream" class="answer" data-markdown-text-style="assistant-message">Streaming answer</div>
+                        </div></div>
                     </div>
                 </div>
-                <form data-composer-placement="thread" data-chatgpt-composer><textarea id="prompt-textarea"></textarea></form>
             </div>
-        </div></main>`);
-        const original = await page.locator('#first-answer').elementHandle();
-        const firstBefore = await page.locator('#first-answer').boundingBox();
-        const secondBefore = await page.locator('[data-turn-key="second"]').boundingBox();
-        assert.ok(secondBefore.y < firstBefore.y + firstBefore.height, 'baseline reproduces overlapping history');
-        await page.addScriptTag({ path: path.join(__dirname, '..', 'chatgpt-custom-ui.user.js') });
+        </div><form data-composer-placement="thread" data-chatgpt-composer>
+            <textarea id="prompt-textarea"></textarea><button>Send</button>
+        </form></main>` }));
+    await page.goto('https://chatgpt.com/c/scroll-regression');
+    await page.addScriptTag({ path:script });
+    await page.waitForFunction(() => document.querySelector('form').dataset.tmChatgptComposer === 'true');
+    return page;
+}
 
-        async function assertHistoryLayout() {
-            const first = await page.locator('[data-turn-key="first"]').boundingBox();
-            const second = await page.locator('[data-turn-key="second"]').boundingBox();
-            const total = await page.locator('#total-cache').boundingBox();
-            assert.ok(second.y >= first.y + first.height - 1, 'next question follows the whole previous response');
-            assert.ok(total.y + total.height >= second.y + second.height - 1, 'scroll range includes all mounted turns');
-            assert.equal(await original.evaluate(e => e.isConnected && e.textContent), 'Original answer');
-        }
-        await assertHistoryLayout();
-        // Streaming inserts a long answer, followed by another question while
-        // React still has the previous small height measurements.
+for (const reverse of [false, true]) {
+    test(`streaming respects manual scroll and composer visibility (${reverse ? 'reverse' : 'forward'} flow)`, async () => {
+        const browser = await chromium.launch({ channel:process.env.X_UI_BROWSER || 'msedge', headless:true });
+        try {
+            const page = await fixture(browser);
+            await page.evaluate(reverse => {
+                const s = document.querySelector('.thread-scroll-container');
+                if (reverse) {
+                    s.style.display = 'flex'; s.style.flexDirection = 'column-reverse';
+                    s.firstElementChild.style.flexShrink = '0';
+                }
+                // Native changes use the prototype setter. Count only writes
+                // made by the userscript, including deferred RAF scroll locks.
+                const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+                window.nativeScroll = value => descriptor.set.call(s, value);
+                window.scriptScrollWrites = [];
+                Object.defineProperty(s, 'scrollTop', {
+                    get() { return descriptor.get.call(this); },
+                    set(value) { window.scriptScrollWrites.push(value); descriptor.set.call(this, value); }
+                });
+                window.nativeScroll(reverse ? -900 : 900);
+            }, reverse);
+            // Showing the composer must not restore a stale scroll position
+            // after the page scrolls to the newly submitted question.
+            await page.evaluate(reverse => {
+                document.dispatchEvent(new MouseEvent('mousemove', { clientY:799, bubbles:true }));
+                window.nativeScroll(reverse ? -400 : 1400);
+            }, reverse);
+            await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            assert.equal(await page.locator('.thread-scroll-container').evaluate(e => Math.round(e.scrollTop)), reverse ? -400 : 1400);
+            assert.deepEqual(await page.evaluate(() => window.scriptScrollWrites), []);
+
+            await page.mouse.click(600, 200); // Hide the composer while reading.
+            await page.mouse.move(600, 300);
+            const before = await page.locator('.thread-scroll-container').evaluate(e => e.scrollTop);
+            await page.mouse.wheel(0, reverse ? -250 : 250);
+            await page.waitForFunction(({before, reverse}) => {
+                const y = document.querySelector('.thread-scroll-container').scrollTop;
+                return reverse ? y < before - 100 : y > before + 100;
+            }, { before, reverse });
+            const reading = await page.locator('.thread-scroll-container').evaluate(e => e.scrollTop);
+            // Native renderer updates its cached sizes on each streamed chunk.
+            await page.evaluate(async () => {
+                for (let i = 0; i < 20; i++) {
+                    const height = 1800 + (i + 1) * 30;
+                    document.querySelector('#stream').style.height = height + 'px';
+                    document.querySelector('#last-cache').style.height = height + 'px';
+                    document.querySelector('#total-cache').style.height = (1800 + height) + 'px';
+                    document.querySelector('#stream').append(' chunk ' + i);
+                    await new Promise(resolve => requestAnimationFrame(resolve));
+                }
+            });
+            const after = await page.locator('.thread-scroll-container').evaluate(e => e.scrollTop);
+            // Reverse flow grows upward; the browser may retain distance from
+            // the bottom. In both cases the script must never write scrollTop.
+            if (!reverse) assert.ok(Math.abs(after - reading) < 2, `${reading} -> ${after}`);
+            assert.deepEqual(await page.evaluate(() => window.scriptScrollWrites), []);
+            await page.mouse.wheel(0, reverse ? 250 : -250);
+            await page.waitForFunction(({after, reverse}) => {
+                const y = document.querySelector('.thread-scroll-container').scrollTop;
+                return reverse ? y > after + 100 : y < after - 100;
+            }, { after, reverse });
+            assert.equal(await page.locator('#first-answer').textContent(), 'Original history answer');
+        } finally { await browser.close(); }
+    });
+}
+
+test('native virtualizer owns cached heights even while mounted content is larger', async () => {
+    const browser = await chromium.launch({ channel:process.env.X_UI_BROWSER || 'msedge', headless:true });
+    try {
+        const page = await fixture(browser);
         await page.evaluate(() => {
-            document.querySelector('[data-turn-key="second"]').insertAdjacentHTML('beforeend', '<div class="answer">Second answer</div>');
-            document.querySelector('#second-cache').insertAdjacentHTML('afterend', '<div style="height:60px"><div data-turn-key="third"><div class="question">Third question</div></div></div>');
+            document.querySelector('#first-cache').style.height = '60px';
+            document.querySelector('#last-cache').style.height = '60px';
+            document.querySelector('#total-cache').style.height = '120px';
         });
-        await assertHistoryLayout();
-        const second = await page.locator('[data-turn-key="second"]').boundingBox();
-        const third = await page.locator('[data-turn-key="third"]').boundingBox();
-        assert.ok(third.y >= second.y + second.height - 1);
-        await page.locator('[data-turn-key="third"]').scrollIntoViewIfNeeded();
+        assert.equal(Math.round((await page.locator('#first-cache').boundingBox()).height), 60);
+        assert.equal(Math.round((await page.locator('#total-cache').boundingBox()).height), 120);
+        // CSS must not expand the list beyond the renderer's cached range.
+        // The renderer can then mount/unmount history and replace measurements.
+        await page.evaluate(() => {
+            document.querySelector('#first-cache').style.height = '1800px';
+            document.querySelector('#last-cache').style.height = '1800px';
+            document.querySelector('#total-cache').style.height = '3600px';
+        });
+        assert.equal(Math.round((await page.locator('#total-cache').boundingBox()).height), 3600);
+        assert.equal(await page.locator('#first-answer').textContent(), 'Original history answer');
+        await page.locator('#stream').scrollIntoViewIfNeeded();
         await page.locator('#first-answer').scrollIntoViewIfNeeded();
         assert.equal(await page.locator('#first-answer').isVisible(), true);
-        // Empty virtualizer placeholders retain their reserved height; mounting
-        // a transcript must not expand unrelated containers or forms.
-        await page.evaluate(() => {
-            document.querySelector('#total-cache > div').insertAdjacentHTML('beforeend', '<div id="empty" style="height:400px"></div>');
-        });
-        assert.equal((await page.locator('#empty').boundingBox()).height, 400);
-        assert.equal(await page.locator('#first-cache').getAttribute('style'), 'height:60px');
-        for (const width of [375, 2560]) {
-            await page.setViewportSize({ width, height:900 });
-            await assertHistoryLayout();
+    } finally { await browser.close(); }
+});
+
+test('legacy scroll compensation yields to wheel, changing content height, and navigation', async () => {
+    const browser = await chromium.launch({ channel:process.env.X_UI_BROWSER || 'msedge', headless:true });
+    try {
+        for (const reason of ['wheel', 'height', 'navigation']) {
+            const page = await fixture(browser);
+            await page.evaluate(reason => {
+                const s = document.querySelector('.thread-scroll-container');
+                s.id = 'legacy-scroll'; s.classList.remove('thread-scroll-container');
+                s.style.height = '600px'; s.style.overflow = 'auto';
+                document.querySelectorAll('[data-turn-key]').forEach(e => e.removeAttribute('data-turn-key'));
+                s.scrollTop = 500;
+                document.querySelector('main').dispatchEvent(new PointerEvent('pointerdown', { bubbles:true }));
+                document.dispatchEvent(new MouseEvent('mousemove', { clientY:799, bubbles:true }));
+                if (reason === 'wheel') {
+                    // Upward wheel hides the composer; this must not create a
+                    // fresh lock after the capture listener cancels the old one.
+                    s.dispatchEvent(new WheelEvent('wheel', { deltaY:-100, bubbles:true }));
+                } else if (reason === 'height') {
+                    document.querySelector('#total-cache').style.height = '4400px';
+                } else {
+                    history.pushState({}, '', '/c/another-conversation');
+                }
+                s.scrollTop = 900;
+            }, reason);
+            await page.evaluate(() => new Promise(resolve => {
+                let frames = 6;
+                function next() { if (--frames) requestAnimationFrame(next); else resolve(); }
+                requestAnimationFrame(next);
+            }));
+            assert.equal(await page.locator('#legacy-scroll').evaluate(e => Math.round(e.scrollTop)), 900, reason);
+            await page.close();
         }
-    } finally {
-        await browser.close();
-    }
+    } finally { await browser.close(); }
 });
