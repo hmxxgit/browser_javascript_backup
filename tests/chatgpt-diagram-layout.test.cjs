@@ -1,10 +1,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
 const path = require('node:path');
+const { launchBrowser } = require('./browser.cjs');
 
 test('DIL diagrams fit viewport height without clipping or changing other media', async () => {
-    const browser = await chromium.launch({ channel: process.env.X_UI_BROWSER || 'msedge', headless: true });
+    const browser = await launchBrowser();
     try {
         const page = await browser.newPage({ viewport: { width: 2560, height: 1080 } });
         // Actual DIL structure: a data-URL img with width:100%, not an inline SVG.

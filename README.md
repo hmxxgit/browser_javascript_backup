@@ -67,6 +67,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | [ChatGPT 脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/chatgpt-custom-ui.user.js) | 查看完整源码、默认配置与版本 |
+| [ChatGPT 维护说明](docs/chatgpt-custom-ui.md) | 模块边界、性能约束、回归与发布流程 |
 | [X 脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/x-custom-ui.user.js) | 查看完整源码、默认配置与版本 |
 | [YouTube 脚本](youtube-default-quality.user.js) | 自动默认画质、视频状态与手动操作保护 |
 | [YouTube 测试与技术说明](docs/youtube-default-quality.md) | 真实浏览器检查、模拟测试、兼容性边界 |
@@ -87,7 +88,7 @@ node --check x-custom-ui.user.js
 node --check youtube-default-quality.user.js
 ```
 
-测试使用 Playwright 和本机 Microsoft Edge，在离线页面样例上运行，不访问真实账号。使用 Chrome：`X_UI_BROWSER=chrome npm test`。
+本地测试默认使用 Microsoft Edge，CI 使用 Playwright 自带 Chromium；测试只加载离线页面样例，不访问真实账号。也可用 `X_UI_BROWSER=chrome npm test` 指定本机 Chrome。
 
 YouTube 的可选联网检查单独运行：`node tests/youtube-default-quality.live.cjs`，或 `X_UI_BROWSER=chrome node tests/youtube-default-quality.live.cjs`。它使用独立临时浏览器环境访问公开视频，不登录账号；不计入 `npm test`。
 

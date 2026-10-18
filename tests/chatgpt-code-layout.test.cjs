@@ -1,10 +1,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
 const path = require('node:path');
+const { launchBrowser } = require('./browser.cjs');
 
 test('code uses available width, scrolls long lines, and preserves source newlines', async () => {
-    const browser = await chromium.launch({ channel: process.env.X_UI_BROWSER || 'msedge', headless: true });
+    const browser = await launchBrowser();
     try {
         const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
         await page.setContent(`<!doctype html><style>

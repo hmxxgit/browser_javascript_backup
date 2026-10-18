@@ -1,16 +1,19 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
 const path = require('node:path');
+const { launchBrowser } = require('./browser.cjs');
 
 test('hides both disclaimer variants without removing React nodes on load and SPA insertion while preserving controls', async () => {
-    const browser = await chromium.launch({ channel: process.env.X_UI_BROWSER || 'msedge', headless: true });
+    const browser = await launchBrowser();
     try {
         const page = await browser.newPage();
         const oldText = 'ChatGPT can make mistakes. Check important info.';
         const newText = 'ChatGPT is AI and can make mistakes. Check important info.';
         await page.setContent(`<main>
-            <article><p id="body">Discussion: ${newText} Please verify.</p></article>
+            <article>
+                <p id="body">Discussion: ${newText} Please verify.</p>
+                <p id="exact-message">${oldText}</p>
+            </article>
             <div id="legacy"><span>${oldText}</span></div>
             <div id="modern" data-markdown-copy="exclude">${newText}</div>
             <div id="controls"><button id="attach"><svg></svg></button><span>${newText}</span></div>
@@ -24,6 +27,7 @@ test('hides both disclaimer variants without removing React nodes on load and SP
         assert.equal(await page.locator('#controls span').isVisible(), false);
         assert.equal(await page.locator('#attach, #send, #prompt-textarea').count(), 3);
         assert.match(await page.locator('#body').textContent(), /Please verify/);
+        assert.equal(await page.locator('#exact-message').isVisible(), true);
 
         for (const text of [oldText, newText]) {
             // The modern footer splits the sentence across nested elements and a link.

@@ -1,6 +1,6 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
+const { launchBrowser } = require('./browser.cjs');
 const path = require('node:path');
 const { readFileSync } = require('node:fs');
 
@@ -9,7 +9,7 @@ const script = path.join(__dirname, '..', 'youtube-default-quality.user.js');
 const A = 'aqz-KE-bpKQ';
 const B = 'jNQXAC9IVRw';
 let browser;
-before(async () => { browser = await chromium.launch({ channel: process.env.X_UI_BROWSER || 'msedge', headless: true }); });
+before(async () => { browser = await launchBrowser(); });
 after(async () => { await browser?.close(); });
 
 test('userscript metadata covers YouTube hosts and iframe execution', () => {

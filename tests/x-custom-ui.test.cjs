@@ -1,6 +1,6 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
+const { launchBrowser } = require('./browser.cjs');
 const path = require('node:path');
 let browser;
 const script = path.join(__dirname, '..', 'x-custom-ui.user.js');
@@ -26,7 +26,7 @@ article{padding:20px;border-bottom:1px solid #333}a{color:#1d9bf0}
 <input aria-label=Composer></section><aside data-testid=sidebarColumn><input aria-label=Search><aside><a href=/i/premium_sign_up>Subscribe</a></aside>Who to follow</aside></div></main>
 <div data-testid=GrokDrawer>Grok drawer</div><div role=dialog id=photo-viewer><img alt=viewer-photo></div>
 </body></html>`;
-before(async () => { browser = await chromium.launch({ channel: process.env.X_UI_BROWSER || 'msedge', headless: true }); });
+before(async () => { browser = await launchBrowser(); });
 after(async () => { await browser?.close(); });
 async function setup(saved = '{}', viewport = { width: 1440, height: 1000 }) {
     const context = await browser.newContext({ viewport });

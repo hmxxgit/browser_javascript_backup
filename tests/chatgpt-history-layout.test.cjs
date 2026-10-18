@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
 const path = require('node:path');
+const { launchBrowser } = require('./browser.cjs');
 const script = path.join(__dirname, '..', 'chatgpt-custom-ui.user.js');
 
 async function fixture(browser) {
@@ -38,7 +38,7 @@ async function fixture(browser) {
 
 for (const reverse of [false, true]) {
     test(`streaming respects manual scroll and composer visibility (${reverse ? 'reverse' : 'forward'} flow)`, async () => {
-        const browser = await chromium.launch({ channel:process.env.X_UI_BROWSER || 'msedge', headless:true });
+        const browser = await launchBrowser();
         try {
             const page = await fixture(browser);
             await page.evaluate(reverse => {
@@ -104,7 +104,7 @@ for (const reverse of [false, true]) {
 }
 
 test('native virtualizer owns cached heights even while mounted content is larger', async () => {
-    const browser = await chromium.launch({ channel:process.env.X_UI_BROWSER || 'msedge', headless:true });
+    const browser = await launchBrowser();
     try {
         const page = await fixture(browser);
         await page.evaluate(() => {
@@ -130,7 +130,7 @@ test('native virtualizer owns cached heights even while mounted content is large
 });
 
 test('legacy scroll compensation yields to wheel, changing content height, and navigation', async () => {
-    const browser = await chromium.launch({ channel:process.env.X_UI_BROWSER || 'msedge', headless:true });
+    const browser = await launchBrowser();
     try {
         for (const reason of ['wheel', 'height', 'navigation']) {
             const page = await fixture(browser);

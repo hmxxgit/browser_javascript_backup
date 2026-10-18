@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.55
+// @version      1.4.56
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -62,7 +62,7 @@
         composerTransitionTime: 150,
         composerHideTranslateY: 35,
         composerInitialHideDelay: 800,
-        composerMaxParentLevels: 10,
+        composerMaxParentLevels: 24,
         composerScrollLockFrames: 4,
 
         /* 底部箭头 */
@@ -101,7 +101,7 @@
         composerTransitionTime: { min: 0, max: 5000 },
         composerHideTranslateY: { min: 0, max: 1000 },
         composerInitialHideDelay: { min: 0, max: 60000 },
-        composerMaxParentLevels: { min: 1, max: 100 },
+        composerMaxParentLevels: { min: 24, max: 100 },
         composerScrollLockFrames: { min: 0, max: 120 },
         bottomArrowHideDelay: { min: 0, max: 60000 },
         bottomArrowFadeDuration: { min: 0, max: 5000 },
@@ -224,13 +224,33 @@
     }
 
     function saveUserConfig(nextConfig) {
-        if (typeof GM_setValue !== "function") return;
-        GM_setValue(CONFIG_STORAGE_KEY, JSON.stringify(nextConfig));
+        if (typeof GM_setValue !== "function") return false;
+
+        try {
+            GM_setValue(CONFIG_STORAGE_KEY, JSON.stringify(nextConfig));
+            return true;
+        }
+
+        catch (error) {
+            console.error("[ChatGPT Custom UI] 保存配置失败", error);
+            return false;
+        }
     }
 
     function resetUserConfig() {
-        if (typeof GM_deleteValue === "function") {
+        if (typeof GM_deleteValue !== "function") {
+            alert("无法恢复默认配置：脚本管理器未提供存储权限。");
+            return;
+        }
+
+        try {
             GM_deleteValue(CONFIG_STORAGE_KEY);
+        }
+
+        catch (error) {
+            console.error("[ChatGPT Custom UI] 恢复默认配置失败", error);
+            alert("恢复默认配置失败，请检查脚本管理器权限。");
+            return;
         }
 
         alert("ChatGPT Custom UI 已恢复默认配置，刷新页面后生效。");
@@ -262,7 +282,7 @@
                     <strong>ChatGPT Custom UI 配置</strong>
                     <button type="button" data-action="close">关闭</button>
                 </div>
-                <form class="tm-cui-form" novalidate>
+                <form class="tm-cui-form">
                     ${createConfigFieldsHtml()}
                     <div class="tm-cui-actions">
                         <span class="tm-cui-secondary-actions">
@@ -470,8 +490,14 @@
         panel.querySelector("form").addEventListener("submit", event => {
             event.preventDefault();
 
+            if (!event.currentTarget.reportValidity()) return;
+
             const nextConfig = readConfigFromForm(event.currentTarget);
-            saveUserConfig(nextConfig);
+            if (!saveUserConfig(nextConfig)) {
+                alert("配置保存失败，请检查脚本管理器权限。");
+                return;
+            }
+
             alert("配置已保存，页面将刷新后生效。");
             location.reload();
         });
@@ -707,7 +733,7 @@
             <label>
                 <span>${escapeHtml(label)}</span>
                 <span class="tm-cui-input-wrap">
-                    <input name="${escapeHtml(key)}" type="${type}" step="${inputStep}"${rangeAttributes} value="${escapeHtml(String(value))}">
+                    <input name="${escapeHtml(key)}" type="${type}" step="${inputStep}"${rangeAttributes}${type === "number" ? " required" : ""} value="${escapeHtml(String(value))}">
                     <span class="tm-cui-unit">${escapeHtml(unit)}</span>
                 </span>
             </label>
@@ -721,7 +747,9 @@
         const colorValue =
             enabled
                 ? value
-                : "#ffffff";
+                : document.documentElement.classList.contains("dark")
+                    ? "#ffffff"
+                    : "#0d0d0d";
 
         return `
             <div class="tm-cui-config-row">
@@ -891,6 +919,30 @@
         const style = document.createElement("style");
         style.setAttribute("data-tm-chatgpt-integrated-layout-css", "true");
         style.textContent = "/* =========================================================\n   ChatGPT 网页版自定义样式\n   =========================================================\n\n   本 CSS 只负责：\n\n   1. 聊天正文宽度\n   2. 底部输入框宽度\n   3. 聊天正文字体\n   4. 输入框字体\n   5. 标题字体\n   6. 代码字体\n   7. 表格、长链接等排版\n\n   注意：\n\n   输入框自动隐藏、\n   阅读状态底部透明、\n   ChatGPT can make mistakes 提示隐藏\n\n   全部交给 Tampermonkey 脚本处理。\n\n   Stylus 不再控制：\n   opacity\n   transform\n   display\n   background\n   box-shadow\n\n   这样可以避免两个脚本互相冲突。\n   ========================================================= */\n\n\n\n/* =========================================================\n   一、参数区\n   =========================================================\n\n   所有默认值都在脚本顶部的 DEFAULT_CONFIG 里，\n   实际生效值由 applyUserConfigCssVariables() 以内联变量写入。\n   修改请改 DEFAULT_CONFIG，或使用“自定义配置”面板。\n   ========================================================= */\n\n/* 参数区 CSS 变量由 applyUserConfigCssVariables() 内联注入，此处不再重复声明。 */\n\n\n\n/* =========================================================\n   二、聊天正文区域加宽\n   ========================================================= */\n\n\n/*\n * ChatGPT 内部很多容器使用 max-w-* 限制宽度。\n *\n * 这里统一覆盖。\n */\nmain [class*=\"max-w-\"],\nmain .mx-auto {\n\n    max-width: var(--chatgpt-content-width) !important;\n}\n\n\n\n/*\n * 新版 ChatGPT 每条消息通常都有：\n *\n * data-message-author-role=\"assistant\"\n * data-message-author-role=\"user\"\n *\n * 直接调整消息区域宽度。\n */\nmain [data-message-author-role] {\n\n    max-width: var(--chatgpt-content-width) !important;\n}\n\n\n\n/*\n * 兼容部分旧版 / 特殊页面结构。\n */\nmain article {\n\n    max-width: var(--chatgpt-content-width) !important;\n}\n\n\n\n/* =========================================================\n   三、底部输入框宽度\n   =========================================================\n\n   注意：\n\n   这里只改宽度。\n\n   不修改：\n   opacity\n   transform\n   display\n   background\n   box-shadow\n\n   因为这些状态现在由 Tampermonkey 负责。\n   ========================================================= */\n\n\n/*\n * Tampermonkey 已经识别出来的真正输入框。\n *\n * 这个选择器优先级最高、最准确。\n */\nform[data-tm-chatgpt-composer=\"true\"] {\n\n    max-width: var(--chatgpt-composer-width) !important;\n}\n\n\n\n/*\n * ChatGPT 新版可能使用 composer 标记。\n *\n * 作为 Tampermonkey 标记尚未建立时的兜底。\n */\nmain [data-testid=\"composer\"],\nmain [class*=\"composer\"] {\n\n    max-width: var(--chatgpt-composer-width) !important;\n}\n\n\n\n/*\n * 普通 form 作为最后兜底。\n *\n * 不设置任何显示/隐藏效果。\n */\nmain form {\n\n    max-width: var(--chatgpt-composer-width) !important;\n}\n\n\n\n/* =========================================================\n   四、聊天正文普通字体\n   ========================================================= */\n\n\n/*\n * 普通段落和列表。\n *\n * p\n * = 普通段落\n *\n * li\n * = 列表项目\n *\n * ol\n * = 有序列表\n *\n * ul\n * = 无序列表\n *\n * blockquote\n * = 引用\n *\n * table / th / td\n * = 表格\n */\n\nmain [data-message-author-role] p,\nmain [data-message-author-role] li,\nmain [data-message-author-role] ol,\nmain [data-message-author-role] ul,\nmain [data-message-author-role] blockquote,\nmain [data-message-author-role] table,\nmain [data-message-author-role] th,\nmain [data-message-author-role] td,\n\nmain article p,\nmain article li,\nmain article ol,\nmain article ul,\nmain article blockquote,\nmain article table,\nmain article th,\nmain article td {\n\n    font-size:\n        var(--chatgpt-message-font-size)\n        !important;\n\n    line-height:\n        var(--chatgpt-message-line-height)\n        !important;\n}\n\n\n\n/* =========================================================\n   五、Markdown / Prose 容器字体\n   =========================================================\n\n   ChatGPT 回答正文通常会被包在 Markdown / Prose 容器中。\n\n   这里作为字体设置的第二层保障。\n   ========================================================= */\n\nmain [data-message-author-role] .markdown,\nmain [data-message-author-role] .prose,\n\nmain article .markdown,\nmain article .prose {\n\n    font-size:\n        var(--chatgpt-message-font-size)\n        !important;\n\n    line-height:\n        var(--chatgpt-message-line-height)\n        !important;\n}\n\n\n\n/* =========================================================\n   六、一级标题 H1\n   ========================================================= */\n\nmain [data-message-author-role] h1,\nmain article h1 {\n\n    font-size:\n        var(--chatgpt-h1-size)\n        !important;\n\n    line-height:\n        1.35\n        !important;\n}\n\n\n\n/* =========================================================\n   七、二级标题 H2\n   ========================================================= */\n\nmain [data-message-author-role] h2,\nmain article h2 {\n\n    font-size:\n        var(--chatgpt-h2-size)\n        !important;\n\n    line-height:\n        1.4\n        !important;\n}\n\n\n\n/* =========================================================\n   八、三级标题 H3\n   ========================================================= */\n\nmain [data-message-author-role] h3,\nmain article h3 {\n\n    font-size:\n        var(--chatgpt-h3-size)\n        !important;\n\n    line-height:\n        1.45\n        !important;\n}\n\n\n\n/* =========================================================\n   九、代码块\n   ========================================================= */\n\n\n/*\n * pre\n *\n * 整个代码块外层。\n *\n * width: 100%\n * → 尽量占满正文区域。\n *\n * overflow-x: auto\n * → 一行代码太长时出现横向滚动，\n *   不会把整个网页撑宽。\n */\n\nmain pre {\n\n    width:\n        100%\n        !important;\n\n    max-width:\n        100%\n        !important;\n\n    font-size:\n        var(--chatgpt-code-font-size)\n        !important;\n\n    line-height:\n        1.55\n        !important;\n\n    overflow-x:\n        auto\n        !important;\n}\n\n\n\n/*\n * code\n *\n * 控制真正的代码文字。\n *\n * 包括：\n *\n * `行内代码`\n *\n * 和整块代码里的文字。\n */\n\nmain code,\nmain pre code {\n\n    font-size:\n        var(--chatgpt-code-font-size)\n        !important;\n}\n\n\n\n/* =========================================================\n   十、输入框字体\n   ========================================================= */\n\n\n/*\n * textarea\n *\n * 兼容旧版输入框。\n *\n *\n * [contenteditable=\"true\"]\n *\n * 兼容新版富文本输入框。\n */\n\nmain textarea,\n\nmain [contenteditable=\"true\"],\n\nmain [data-testid=\"composer\"] textarea,\n\nmain [class*=\"composer\"] textarea,\n\nform[data-tm-chatgpt-composer=\"true\"] textarea,\n\nform[data-tm-chatgpt-composer=\"true\"]\n[contenteditable=\"true\"] {\n\n    font-size:\n        var(--chatgpt-input-font-size)\n        !important;\n\n    line-height:\n        1.5\n        !important;\n}\n\n\n\n/* =========================================================\n   十一、表格\n   ========================================================= */\n\n\n/*\n * 表格内容很宽时允许横向滚动，\n * 防止整个页面被撑开。\n */\n\nmain table {\n\n    max-width:\n        100%\n        !important;\n}\n\n\n\n/* =========================================================\n   十二、防止长文字撑坏布局\n   ========================================================= */\n\n\n/*\n * 很长的网址、\n * 很长的英文字符串、\n * 随机字符串，\n *\n * 如果一行放不下，\n * 允许浏览器自动换行。\n */\n\nmain p,\nmain li,\nmain blockquote {\n\n    overflow-wrap:\n        anywhere\n        !important;\n}\n\n\n\n/* =========================================================\n   十三、图片和媒体防止超出正文\n   ========================================================= */\n\nmain [data-message-author-role] img,\nmain article img,\n\nmain [data-message-author-role] video,\nmain article video {\n\n    max-width:\n        100%\n        !important;\n\n    height:\n        auto\n        !important;\n}\n\n\n\n/* =========================================================\n   十四、与 Tampermonkey 自动隐藏脚本的兼容说明\n   =========================================================\n\n   下面这些样式，本 Stylus CSS 故意不设置：\n\n   opacity\n   transform\n   pointer-events\n   display\n   visibility\n\n   background\n   background-image\n   box-shadow\n   filter\n   backdrop-filter\n\n\n   原因：\n\n   Tampermonkey 脚本目前负责：\n\n   1. 输入框隐藏\n   2. 输入框弹出\n   3. 鼠标离开输入框立即隐藏\n   4. 阅读状态底部透明\n   5. 隐藏：\n      ChatGPT can make mistakes.\n      Check important info.\n\n   因此：\n\n   Stylus = 页面排版\n\n   Tampermonkey = 输入框动态行为\n\n   两者职责分离，避免互相冲突。\n   ========================================================= */\n\n\n/* =========================================================\n   用户提问字体大小\n   ========================================================= */\n\n/* 只调整你自己发送的消息 */\nmain [data-message-author-role=\"user\"],\nmain [data-message-author-role=\"user\"] * {\n    font-size: var(--chatgpt-user-message-font-size) !important;\n    line-height: var(--chatgpt-user-message-line-height) !important;\n}\n\n\n/* =========================================================\n   用户提问气泡宽度\n   ========================================================= */\n\n/* 整个用户消息容器靠右 */\nmain [data-message-author-role=\"user\"] {\n    display: flex !important;\n    justify-content: flex-end !important;\n    min-width: 0 !important;\n}\n\n\n/* 用户提问气泡本身限制宽度 */\nmain [data-message-author-role=\"user\"] > div {\n    max-width: var(--chatgpt-user-bubble-max-width) !important;\n    width: fit-content !important;\n    min-width: 0 !important;\n    box-sizing: border-box !important;\n    overflow-wrap: anywhere !important;\n    word-break: break-word !important;\n}\n\n\n/* 用户提问中的长链接 / 长字符串正常换行 */\nmain [data-message-author-role=\"user\"] p,\nmain [data-message-author-role=\"user\"] a,\nmain [data-message-author-role=\"user\"] span {\n    max-width: 100% !important;\n    min-width: 0 !important;\n    overflow-wrap: anywhere !important;\n    word-break: break-word !important;\n}\n";
+        /*
+         * 旧整合样式里的通配 max-w-/mx-auto 规则过宽；在同一 style 末尾
+         * 撤销它，并只对白名单正文宽度类和消息容器应用配置宽度。
+         */
+        style.textContent += `
+            main [class*="max-w-"],
+            main .mx-auto {
+                max-width: revert !important;
+            }
+
+            main :is(
+                [class~="max-w-2xl"],
+                [class~="max-w-3xl"],
+                [class~="max-w-4xl"],
+                [class~="max-w-5xl"],
+                [class~="max-w-6xl"],
+                [class~="max-w-7xl"]
+            ),
+            main [data-message-author-role],
+            main article {
+                max-width: var(--chatgpt-content-width) !important;
+            }
+        `;
+
         document.documentElement.appendChild(style);
     }
 
@@ -989,7 +1041,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.55
+     * ChatGPT Custom UI v1.4.56
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -1052,7 +1104,14 @@
                 document.documentElement,
             {
                 childList: true,
-                subtree: true
+                subtree: true,
+                attributes: true,
+                attributeFilter: [
+                    "aria-label",
+                    "title",
+                    "data-testid",
+                    "role"
+                ]
             }
         );
     }
@@ -1062,7 +1121,12 @@
     }
 
     const sharedRouteChangeHandlers = [];
-    let sharedLastPathname = location.pathname;
+
+    function getSharedRouteKey() {
+        return location.pathname + location.search + location.hash;
+    }
+
+    let sharedLastRoute = getSharedRouteKey();
 
     setInterval(
         () => {
@@ -1070,15 +1134,17 @@
                 return;
             }
 
-            if (location.pathname === sharedLastPathname) {
+            const nextRoute = getSharedRouteKey();
+
+            if (nextRoute === sharedLastRoute) {
                 return;
             }
 
-            sharedLastPathname = location.pathname;
+            sharedLastRoute = nextRoute;
 
             for (const handler of sharedRouteChangeHandlers) {
                 try {
-                    handler(sharedLastPathname);
+                    handler(sharedLastRoute);
                 }
 
                 catch (error) {
@@ -1094,6 +1160,17 @@
 
     function onSharedRouteChange(handler) {
         sharedRouteChangeHandlers.push(handler);
+
+        try {
+            handler(sharedLastRoute);
+        }
+
+        catch (error) {
+            console.error(
+                "[ChatGPT Custom UI] initial route handler failed",
+                error
+            );
+        }
     }
 
 
@@ -1160,11 +1237,7 @@
      * 但结构识别必须至少检查 24 层，否则最外层的 ::before 渐变不会被
      * 标记，输入框隐藏后会在页面底部留下大块黑色阴影。
      */
-    const STRUCTURE_SCAN_LIMIT =
-        Math.max(
-            MAX_PARENT_LEVELS,
-            24
-        );
+    const STRUCTURE_SCAN_LIMIT = MAX_PARENT_LEVELS;
 
 
     /*
@@ -1236,8 +1309,13 @@
 
     let lastMarkedComposer = null;
 
-    let lastPathname =
-        location.pathname;
+    let lastRoute = getSharedRouteKey();
+
+    let composerRevealSuppressed = false;
+
+    let lastScrollerUpgradeProbeAt = 0;
+
+    const SCROLLER_UPGRADE_PROBE_INTERVAL = 500;
 
 
 
@@ -1321,9 +1399,14 @@
                 none
                 !important;
 
+            visibility:
+                hidden
+                !important;
+
             transition:
                 opacity ${TRANSITION_TIME}ms ease,
-                transform ${TRANSITION_TIME}ms ease
+                transform ${TRANSITION_TIME}ms ease,
+                visibility 0s linear ${TRANSITION_TIME}ms
                 !important;
         }
 
@@ -1354,7 +1437,8 @@
 
             transition:
                 opacity ${TRANSITION_TIME}ms ease,
-                transform ${TRANSITION_TIME}ms ease
+                transform ${TRANSITION_TIME}ms ease,
+                visibility 0s linear 0s
                 !important;
         }
 
@@ -1822,128 +1906,6 @@
 
 
     /* =========================================================
-       七、判断元素是否只是一个无害的空壳
-       ========================================================= */
-
-    function isSafeEmptyWrapper(
-        element
-    ) {
-
-        if (!element) {
-            return false;
-        }
-
-
-        /*
-         * body / html 永远不能删。
-         */
-        if (
-            element === document.body
-            ||
-            element === document.documentElement
-        ) {
-            return false;
-        }
-
-
-        /*
-         * main 以及 composer / dock 结构永远不能删。
-         *
-         * 优先原则：
-         * 宁可留下一个空 div，
-         * 也不要删除 ChatGPT 原生 composer 的结构。
-         */
-        if (
-            element.tagName === "MAIN"
-            ||
-            element === currentComposer
-            ||
-            element === currentDock
-            ||
-            (
-                currentComposer
-                &&
-                currentComposer.isConnected
-                &&
-                element.contains?.(
-                    currentComposer
-                )
-            )
-            ||
-            (
-                currentDock
-                &&
-                currentDock.isConnected
-                &&
-                element.contains?.(
-                    currentDock
-                )
-            )
-        ) {
-            return false;
-        }
-
-
-        /*
-         * 必须真正为空：
-         * 还有任何子元素都不是空壳。
-         */
-        if (
-            element.children.length > 0
-        ) {
-            return false;
-        }
-
-
-        /*
-         * 含交互元素 / 图标绝对不能删。
-         *
-         * （元素自己就是控件时，matches 也能拦住。）
-         */
-        if (
-            containsProtectedControls(
-                element
-            )
-        ) {
-            return false;
-        }
-
-
-        /*
-         * 有文字也不能认为是空壳。
-         */
-        const text =
-            normalizeText(
-                element.textContent
-            );
-
-
-        if (text !== "") {
-            return false;
-        }
-
-
-        /*
-         * 如果还有图片、SVG、视频等内容，
-         * 同样不要删。
-         *
-         * 这样能进一步保护纯图标按钮的周边结构。
-         */
-        if (
-            element.querySelector(
-                "svg, img, picture, video, canvas"
-            )
-        ) {
-            return false;
-        }
-
-
-        return true;
-    }
-
-
-
-    /* =========================================================
        八、永久删除免责声明
        =========================================================
 
@@ -2040,6 +2002,15 @@
             const element
             of candidates
         ) {
+
+            // 消息正文可能恰好复述免责声明；只清理页脚/非消息区域。
+            if (
+                element.closest?.(
+                    '[data-message-author-role], article, [data-turn-key]'
+                )
+            ) {
+                continue;
+            }
 
             /*
              * 免责声明清理绝不进入 composer / dock 结构：
@@ -2284,7 +2255,8 @@
                 button.closest("main") &&
                 normalizeText(button.textContent) === "cookie preferences"
             ) {
-                button.remove();
+                // 保留 React 管理的节点，避免后续 patch/unmount 抛错。
+                button.style.setProperty("display", "none", "important");
             }
         }
     }
@@ -2886,6 +2858,12 @@
 
     function showComposer() {
 
+        if (currentComposer?.isConnected) {
+            currentComposer.inert = false;
+            currentComposer.removeAttribute("inert");
+            currentComposer.removeAttribute("aria-hidden");
+        }
+
         /*
          * 已经显示时不做任何事：
          *
@@ -2923,11 +2901,15 @@
        十四、隐藏输入框
        ========================================================= */
 
-    function hideComposer(preserveScroll = true) {
+    function hideComposer(preserveScroll = true, suppressReveal = false) {
 
         // 点击/滚动隐藏后，DOM 更新不能复用发送时的底部鼠标位置来重新显示。
         // 只有下一次真实鼠标移动到触发区才允许 reveal。
         lastMouseY = null;
+
+        if (suppressReveal) {
+            composerRevealSuppressed = true;
+        }
 
         /*
          * 首页永远不能隐藏。
@@ -2943,6 +2925,16 @@
 
 
         if (!composerVisible) {
+            if (currentComposer?.isConnected) {
+                if (currentComposer.contains(document.activeElement)) {
+                    document.activeElement?.blur?.();
+                }
+
+                currentComposer.inert = true;
+                currentComposer.setAttribute("inert", "");
+                currentComposer.setAttribute("aria-hidden", "true");
+            }
+
             if (
                 document.body.classList.contains(
                     "tm-chatgpt-composer-visible"
@@ -2964,6 +2956,16 @@
 
         composerVisible =
             false;
+
+        if (currentComposer?.isConnected) {
+            if (currentComposer.contains(document.activeElement)) {
+                document.activeElement?.blur?.();
+            }
+
+            currentComposer.inert = true;
+            currentComposer.setAttribute("inert", "");
+            currentComposer.setAttribute("aria-hidden", "true");
+        }
 
 
         document.body.classList.remove(
@@ -3020,6 +3022,13 @@
         const distanceToBottom =
             window.innerHeight -
             clientY;
+
+        if (distanceToBottom > TRIGGER_HEIGHT) {
+            composerRevealSuppressed = false;
+            return;
+        }
+
+        if (composerRevealSuppressed) return;
 
 
         /*
@@ -3090,7 +3099,12 @@
 
 
     function isRenderedComposer(form) {
-        if (!form?.isConnected || form.closest('[hidden], [inert]')) return false;
+        if (!form?.isConnected || form.closest('[hidden]')) return false;
+
+        // 脚本会给隐藏的 composer 自身加 inert；只有祖先 inert 才表示旧页面树。
+        const inertRoot = form.closest('[inert]');
+        if (inertRoot && inertRoot !== form) return false;
+
         const rect = form.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
     }
@@ -3105,13 +3119,6 @@
         forceRefresh = false
     ) {
 
-        // 新会话原生表单可能晚于路由挂载，旧首页/Work 表单仍 isConnected。
-        const nativeComposer = findNativeThreadComposer();
-        if (nativeComposer && nativeComposer !== currentComposer) {
-            currentComposer = nativeComposer;
-            return nativeComposer;
-        }
-
         if (
             !forceRefresh
             &&
@@ -3121,6 +3128,13 @@
         ) {
 
             return currentComposer;
+        }
+
+        // 仅在缓存失效、路由变化或 mutation 明确带来新 form 时做布局探测。
+        const nativeComposer = findNativeThreadComposer();
+        if (nativeComposer && nativeComposer !== currentComposer) {
+            currentComposer = nativeComposer;
+            return nativeComposer;
         }
 
 
@@ -3632,6 +3646,18 @@
             forceStructure
         );
 
+        if (document.body.classList.contains("tm-chatgpt-composer-visible")) {
+            composer.inert = false;
+            composer.removeAttribute("inert");
+            composer.removeAttribute("aria-hidden");
+        }
+
+        else {
+            composer.inert = true;
+            composer.setAttribute("inert", "");
+            composer.setAttribute("aria-hidden", "true");
+        }
+
 
         updatePageState();
     }
@@ -3684,8 +3710,8 @@
 
             // 滚轮发生在输入框内部时，绝对不隐藏（保护打字/编辑）
             if (
-                currentComposer &&
-                currentComposer.contains(target)
+                currentComposer?.contains(target)
+                || currentDock?.contains(target)
             ) {
                 return;
             }
@@ -3693,7 +3719,7 @@
             // 仅向上滚动（deltaY < 0）时隐藏
             if (event.deltaY < 0) {
                 // 滚轮默认动作尚未执行，不能锁回动作前的 scrollTop。
-                hideComposer(false);
+                hideComposer(false, true);
             }
         },
 
@@ -3795,7 +3821,15 @@
             if (composer) markComposerStructure(composer);
 
             // 1. 点击输入框内部 → 不隐藏
-            if (composer?.contains(target)) return;
+            if (composer?.contains(target) || currentDock?.contains(target)) return;
+
+            // Portal 浮层挂在 body 下，但仍属于 composer 的交互流程。
+            if (target.closest(
+                '[role="dialog"], [role="menu"], [role="listbox"], ' +
+                '[aria-modal="true"], [data-radix-popper-content-wrapper]'
+            )) {
+                return;
+            }
 
             // 2. 点击聊天正文区域（main）
             const mainEl = document.querySelector('main');
@@ -3811,12 +3845,12 @@
                     return;
                 }
                 // 否则点击正文文字、空白、代码、图片等 → 隐藏
-                hideComposer();
+                hideComposer(true, true);
                 return;
             }
 
             // 3. 点击其他区域（侧边栏、顶部导航等）也隐藏
-            hideComposer();
+            hideComposer(true, true);
         },
         {
             passive: true,
@@ -3895,13 +3929,11 @@
                         false;
 
 
-                    if (
-                        location.pathname !==
-                        lastPathname
-                    ) {
+                    const nextRoute = getSharedRouteKey();
 
-                        lastPathname =
-                            location.pathname;
+                    if (nextRoute !== lastRoute) {
+
+                        lastRoute = nextRoute;
 
 
                         routeChanged =
@@ -3925,8 +3957,18 @@
                      * 只走下面的轻量 fast path。
                      */
                     // 即使旧节点仍连接，也要检测晚挂载的新会话表单。
+                    const composerCandidateAdded = recordsToProcess.some(record =>
+                        Array.from(record.addedNodes || []).some(node =>
+                            node.nodeType === Node.ELEMENT_NODE
+                            && (
+                                node.matches?.('form[data-composer-placement="thread"][data-chatgpt-composer]')
+                                || node.querySelector?.('form[data-composer-placement="thread"][data-chatgpt-composer]')
+                            )
+                        )
+                    );
+
                     const composerBeforeRefresh = currentComposer;
-                    const liveComposer = getComposer();
+                    const liveComposer = getComposer(composerCandidateAdded);
                     const composerAlive =
                         !!liveComposer && liveComposer === composerBeforeRefresh;
 
@@ -3941,11 +3983,19 @@
                         );
 
 
+                    const nativeScroller = currentScrollerIsFallback
+                        ? document.querySelector(".thread-scroll-container")
+                        : null;
+                    const now = performance.now();
                     const scrollerNeedsUpgrade =
-                        currentScrollerIsFallback &&
-                        !!document.querySelector(
-                            ".thread-scroll-container"
-                        );
+                        currentScrollerIsFallback
+                        && nativeScroller
+                        && nativeScroller.scrollHeight > nativeScroller.clientHeight + 20
+                        && now - lastScrollerUpgradeProbeAt >= SCROLLER_UPGRADE_PROBE_INTERVAL;
+
+                    if (scrollerNeedsUpgrade) {
+                        lastScrollerUpgradeProbeAt = now;
+                    }
 
 
                     const structureAlive =
@@ -4028,9 +4078,8 @@
        ========================================================= */
 
     onSharedRouteChange(
-        pathname => {
-            lastPathname =
-                pathname;
+        route => {
+            lastRoute = route;
 
 
             requestAnimationFrame(
@@ -4048,6 +4097,20 @@
             );
         }
     );
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) return;
+
+        pendingMutationRecords = [];
+        requestAnimationFrame(() => {
+            refreshComposer({
+                forceComposer: true,
+                forceScroller: true,
+                forceStructure: true,
+                scanDisclaimer: true
+            });
+        });
+    });
 
 
 
@@ -4307,7 +4370,7 @@
         [data-tm-scroll-bottom-button="true"] {
 
             /* 仅移动按钮，不改变 Footer 布局；保留原生 translate 的水平居中。 */
-            transform: translateY(calc(-1 * var(--tm-scroll-arrow-lift, 48px))) !important;
+            translate: 0 calc(-1 * var(--tm-scroll-arrow-lift, 48px)) !important;
 
             transition:
                 opacity ${FADE_DURATION}ms ease,
@@ -4826,7 +4889,7 @@
         const buttons =
             Array.from(
                 document.querySelectorAll(
-                    "button"
+                    "button, [role='button']"
                 )
             );
 
@@ -6288,6 +6351,10 @@
             currentButton
         ) {
 
+            if (currentButton) {
+                cleanupCurrentButton();
+            }
+
             currentButton =
                 button;
 
@@ -6845,6 +6912,20 @@
         }
     }
 
+    function isEventInChatScroller(target) {
+        if (!(target instanceof Element)) return true;
+
+        const scroller = getScrollContainer();
+        if (!scroller) return false;
+
+        if (scroller === document.scrollingElement) {
+            const main = document.querySelector("main");
+            return !main || main.contains(target);
+        }
+
+        return scroller === target || scroller.contains(target);
+    }
+
 
 
     /* =========================================================
@@ -6921,6 +7002,8 @@
 
                 return;
             }
+
+            if (!isEventInChatScroller(event.target)) return;
 
 
             /*
@@ -7108,6 +7191,15 @@
                 return;
             }
 
+            if (
+                target instanceof Element
+                && target !== document.body
+                && target !== document.documentElement
+                && !isEventInChatScroller(target)
+            ) {
+                return;
+            }
+
 
             const scrollsUp =
                 UPWARD_SCROLL_KEYS.has(
@@ -7215,11 +7307,11 @@
                                         &&
                                         (
                                             node.matches?.(
-                                                "button"
+                                                "button, [role='button']"
                                             )
                                             ||
                                             node.querySelector?.(
-                                                "button"
+                                                "button, [role='button']"
                                             )
                                         )
                                 )
@@ -7493,15 +7585,15 @@
     const HIDDEN_ATTR = "data-tm-chatgpt-hidden-top-action";
     const FRAME_ATTR = "data-tm-chatgpt-hidden-top-action-frame";
     const TOP_ACTION_MUTATION_SELECTOR = [
-        "button",
-        "[role='button']",
         `[${HIDDEN_ATTR}='true']`,
         `[${FRAME_ATTR}='true']`
     ].join(",");
+    const TOP_ACTION_BUTTON_SELECTOR = "button, [role='button']";
 
     const SCAN_DELAY = 700;
     const SELF_HEAL_INTERVAL = 10000;
     let scanTimer = null;
+    let scanPending = false;
     let currentShareButton = null;
     let currentMoreButton = null;
     let currentTopActionFrame = null;
@@ -7521,9 +7613,12 @@
          * 不再遍历这一批 mutation 的子树，
          * 把每个 700ms 窗口内的子树扫描限制为一次。
          */
-        if (scanTimer !== null) return;
-
         if (shouldScanTopActions(mutationRecords)) {
+            if (scanTimer !== null) {
+                scanPending = true;
+                return;
+            }
+
             scheduleScan();
         }
     });
@@ -7595,8 +7690,8 @@
                 opacity: 0 !important;
                 visibility: visible !important;
                 pointer-events: auto !important;
-                background: #000000 !important;
-                background-color: #000000 !important;
+                background: var(--main-surface-primary, var(--surface-primary, rgba(32, 33, 35, 0.96))) !important;
+                background-color: var(--main-surface-primary, var(--surface-primary, rgba(32, 33, 35, 0.96))) !important;
                 box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45) !important;
                 border-color: transparent !important;
                 transition: opacity 120ms ease !important;
@@ -7605,8 +7700,8 @@
             [data-tm-chatgpt-hidden-top-action-frame="true"]:hover,
             [data-tm-chatgpt-hidden-top-action-frame="true"]:focus-within {
                 opacity: 1 !important;
-                background: #000000 !important;
-                background-color: #000000 !important;
+                background: var(--main-surface-primary, var(--surface-primary, rgba(32, 33, 35, 0.96))) !important;
+                background-color: var(--main-surface-primary, var(--surface-primary, rgba(32, 33, 35, 0.96))) !important;
             }
 
             [data-tm-chatgpt-hidden-top-action-frame="true"]:hover [data-tm-chatgpt-hidden-top-action="true"],
@@ -7633,11 +7728,24 @@
         scanTimer = setTimeout(() => {
             scanTimer = null;
             markOriginalButtons();
+
+            if (scanPending) {
+                scanPending = false;
+                scheduleScan();
+            }
         }, SCAN_DELAY);
     }
 
     function shouldScanTopActions(mutationRecords) {
         for (const record of mutationRecords) {
+            if (
+                record.type === "attributes"
+                && record.target?.matches?.(TOP_ACTION_BUTTON_SELECTOR)
+                && isInConversationTopRight(record.target)
+            ) {
+                return true;
+            }
+
             if (
                 record.target?.nodeType === Node.ELEMENT_NODE &&
                 record.target.closest?.(TOP_ACTION_MUTATION_SELECTOR)
@@ -7660,12 +7768,13 @@
         for (const node of nodes) {
             if (node.nodeType !== Node.ELEMENT_NODE) continue;
 
-            if (
-                node.matches?.(TOP_ACTION_MUTATION_SELECTOR) ||
-                node.querySelector?.(TOP_ACTION_MUTATION_SELECTOR)
-            ) {
-                return true;
-            }
+            if (node.matches?.(TOP_ACTION_MUTATION_SELECTOR)) return true;
+
+            const buttons = node.matches?.(TOP_ACTION_BUTTON_SELECTOR)
+                ? [node]
+                : Array.from(node.querySelectorAll?.(TOP_ACTION_BUTTON_SELECTOR) || []);
+
+            if (buttons.some(isInConversationTopRight)) return true;
         }
 
         return false;
@@ -7869,31 +7978,39 @@
         );
     }
 
-    function getButtonText(button) {
+    function getButtonLabels(button) {
         return [
             button.innerText,
             button.getAttribute("aria-label"),
-            button.getAttribute("title")
+            button.getAttribute("title"),
+            button.getAttribute("data-testid")
         ]
             .filter(Boolean)
-            .join(" ")
-            .trim()
-            .toLowerCase();
+            .map(value => normalizeText(value));
     }
 
     function isShareButton(button) {
-        const text = getButtonText(button);
-        return text.includes("share") || text.includes("分享");
+        const labels = getButtonLabels(button);
+        return labels.some(label => [
+            "share",
+            "share conversation",
+            "分享",
+            "分享对话",
+            "share-button"
+        ].includes(label));
     }
 
     function isMoreButton(button) {
-        const text = getButtonText(button);
-        return (
-            text.includes("more") ||
-            text.includes("更多") ||
-            text.includes("menu") ||
-            text.includes("菜单")
-        );
+        const labels = getButtonLabels(button);
+        return labels.some(label => [
+            "more",
+            "more options",
+            "conversation options",
+            "更多",
+            "更多选项",
+            "菜单",
+            "conversation-options"
+        ].includes(label));
     }
 })();
 
