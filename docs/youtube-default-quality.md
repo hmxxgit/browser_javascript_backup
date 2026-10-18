@@ -52,6 +52,7 @@
 - 若支持 [Navigation API](https://developer.chrome.com/docs/web-platform/navigation-api)，还监听 `currententrychange`，覆盖没有 YouTube 导航事件的 `pushState` / `replaceState`。不替换网站的 History 方法；旧浏览器仍使用上述事件。
 - 从 URL 或 `getVideoData().video_id` 确认身份；URL 和播放器同时提供 ID 时必须一致，内部 response 提供 ID 时也必须一致。嵌入式播放器不必提供 response 接口。确认 DOM 播放器仍连接，读取画质列表后再次检查身份，防止旧任务作用于新视频。Shorts 存在多个播放器时优先匹配 ID 且可见的活动播放器。明确 URL ID 没有匹配播放器时直接等待，不退回绑定其他视频。
 - 媒体元数据（`readyState >= 1`）就绪后立即选择，不再要求主视频已播放或暂停，也不再固定等待 2 秒；只保留 250ms 的同源检查，用于合并启动期媒体源替换。播放器 / 媒体事件会把待执行探测提前到今天，而不是等旧的 500ms / 1s 计时器。选择完成后在 1.5 秒和 3 秒复查原生摘要与勾选；若 YouTube 启动控制器将其改回 Auto，会重新应用固定档位（每次访问最多自动纠正 2 次）。
+- 选择在隐藏的原生菜单中完成，正常观看时不弹出画质列表：开始前给播放器加临时样式隐藏 `.ytp-settings-menu` / `.ytp-quality-menu`（`visibility`、`opacity`、`pointer-events`），完成后先确认菜单实际关闭再移除样式。只有用户已打开的真实设置面板（按 `display` 判定，而非可能残留的 `aria-expanded`）才会被复用。
 - 就绪检查延迟为 0、500ms、1s，之后不超过每 2s 一次；最多 45 秒或 30 次检查，以先到者为准。普通事件不会重置额度；首次确认非广告的主视频播放时，至多获得一次同样的有限额度（无论原额度是否已耗尽）。同时检查媒体事件和播放器 API 事件，覆盖 `playing` 早于主播放器状态更新的顺序；广告不消耗机会，后续播放事件不再延长，超时期间的手动选择仍保持锁定。完成后无轮询，始终至多一个计时器。
 - 播放器 / 文档通知在同一任务内通过一个微任务合并刷新；媒体事件会重置 250ms 源检查并提前触发探测，Shorts 预加载不干扰活动播放器。导航开始和手动选择仍同步取消。
 - 等待超时、导航事件丢失或未确认结果后，脚本在控制台提示并停止写入；可通过 **重新应用画质** 菜单命令重新开始当前视频，不需要刷新。
@@ -90,7 +91,20 @@ node tests/youtube-default-quality-reload.live.cjs
 TM_EXTENSION_PATH='/absolute/path/to/unpacked/Tampermonkey' node tests/youtube-default-quality-settings.live.cjs
 ```
 
-离线测试在真实 Chromium 浏览器中加载模拟播放器，验证脚本状态机；不等于验证 YouTube 的真实菜单、接口或视频画面。2.5.0 的 YouTube 离线回归为 **127 项通过**；完整仓库 `npm test` 为 **146 项通过**。真实网站检查结果见下方记录。
+离线测试在真实 Chromium 浏览器中加载模拟播放器，验证脚本状态机；不等于验证 YouTube 的真实菜单、接口或视频画面。2.5.1 的 YouTube 离线回归为 **128 项通过**；完整仓库 `npm test` 为 **147 项通过**。真实网站检查结果见下方记录。
+
+### 2.5.1 后台选择、不弹出画质列表（2026-10-18）
+
+用户反馈自动设置画质时，清晰度列表仍会弹在页面上。真实页面复现后确认是两个叠加问题：
+
+| 问题 | 复现 | 修复 |
+| --- | --- | --- |
+| 关闭后的设置菜单可能残留 `aria-expanded=true` / `.ytp-settings-shown`，旧代码把关闭的面板当成用户已打开，跳过隐藏直接调用 `openSettingsMenuItem` | 在真实页面手动设置残留 `aria-expanded=true` 且菜单 `display:none`，选择时设置菜单可见 | `userPanel` 同时要求 `.ytp-settings-menu` 的实际 `display !== 'none'`，不再只信 class / aria |
+| 恢复逻辑用 `isExpanded()`（class OR aria）判断是否继续点击齿轮；点击一次关闭后 aria 仍为 true，第二次点击又把它打开，随后移除隐藏样式 | 真实页面调试记录：click 0 后 `display:none/class:false/aria:true`，click 1 后重新 `display:block` | 关闭条件改为 `isExpanded() && menuDisplayed()`；菜单实际 `display:none` 后立即停止，不再点第二次 |
+
+同时把隐藏样式扩展到画质子菜单，并加入 `opacity:0` / `pointer-events:none`。只有脚本自己打开的面板才会被隐藏、关闭和清理；用户真实打开的面板仍复用，不关闭、不抢焦点。
+
+验证：离线 YouTube **128 项**、全仓库 **147 项**通过；真实页面在正常观看、模拟残留 `aria-expanded`、以及保持设置面板打开三种情况下均未出现脚本自动弹出的画质列表（保持打开时是用户自己的面板，会切换到画质列表并勾选 1080p HD）。详见 [2.5.1 复查与修复](youtube-default-quality-review-2026-10-18-2.5.1.md)。
 
 ### 2.5.0 取消固定等待、启动后复查（2026-10-18）
 

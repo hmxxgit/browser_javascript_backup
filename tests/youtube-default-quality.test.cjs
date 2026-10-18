@@ -69,6 +69,9 @@ async function setup(options = {}) {
             const expanded = !p.classList.contains('ytp-settings-shown');
             p.classList.toggle('ytp-settings-shown', expanded);
             event.currentTarget.setAttribute('aria-expanded', String(expanded));
+            if (model.realMenuDisplay) {
+                p.querySelector('.ytp-settings-menu').style.display = expanded ? 'block' : 'none';
+            }
         });
         for (const [index, item] of [...document.querySelectorAll('[role="menuitemradio"]')].entries()) {
             const quality = ['premium1080', 'hd1080', 'large', 'auto'][index];
@@ -129,6 +132,7 @@ async function setup(options = {}) {
                 menuOpens += 1;
                 p.classList.add('ytp-settings-shown');
                 p.querySelector('.ytp-settings-button').setAttribute('aria-expanded', model.staleSettingsAria ? 'false' : 'true');
+                p.querySelector('.ytp-settings-menu').style.display = 'block';
                 if (model.nativeOpenThrows || menuOpens <= (model.nativeOpenMisses || 0)) throw new Error('menu not ready');
                 if (model.nativeOpenNoOptions) return;
                 const append = () => p.querySelector('.ytp-settings-menu').append(pendingQualityMenu);
@@ -1213,6 +1217,32 @@ test('an already-open settings panel does not block the fixed selection', async 
     } finally { await context.close(); }
 });
 
+test('a stale expanded attribute does not open the quality list visibly', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true,
+        mediaReady: 0, setupClock: 0, realMenuDisplay: true });
+    try {
+        await page.evaluate(() => {
+            const p = document.getElementById('movie_player');
+            const menu = p.querySelector('.ytp-settings-menu');
+            menu.style.display = 'none';
+            p.querySelector('.ytp-settings-button').setAttribute('aria-expanded', 'true');
+            window.sawPreparing = false;
+            new MutationObserver(records => {
+                if (records.some(record => record.attributeName === 'data-yt-default-quality-preparing')) {
+                    window.sawPreparing = true;
+                }
+            }).observe(p, { attributes: true });
+        });
+        await page.evaluate(() => { model.mediaReady = 4; playerSignal('onStateChange'); });
+        await page.clock.runFor(5_000);
+        assert.equal(await page.evaluate(() => window.sawPreparing), true);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
+        assert.equal(await page.locator('.ytp-settings-button').getAttribute('aria-expanded'), 'false');
+        assert.ok((await page.evaluate(() => settingsClicks)) >= 1); // the script closed its hidden popup
+    } finally { await context.close(); }
+});
+
 test('async preparation is cancelled on trusted settings interaction without stealing focus', async () => {
     const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true,
         lazyMenuAsync: true, lazyMenuDelay: 1_200, mediaReady: 0, setupClock: 0 });
@@ -1225,6 +1255,10 @@ test('async preparation is cancelled on trusted settings interaction without ste
         assert.equal(await page.evaluate(() => settingsClicks), 1); // the user's own click only
         assert.equal(await page.evaluate(() => document.activeElement.className), 'ytp-settings-button');
         await page.clock.runFor(1_800);
+        if (!(await page.locator('#movie_player').evaluate(p => p.classList.contains('ytp-settings-shown')))) {
+            await page.locator('.ytp-settings-button').click();
+            await page.clock.runFor(100);
+        }
         await page.getByRole('menuitemradio', { name: '480p', exact: true }).press('Enter');
         await signals(page);
         assert.ok((await page.evaluate(() => nativeActions)) >= 1); // the user's fixed choice wins

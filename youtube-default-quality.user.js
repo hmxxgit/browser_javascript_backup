@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      2.5.0
-// @description  可配置首选画质，不足时向下匹配；进入视频立即选择固定档位，不使用 Auto。
+// @version      2.5.1
+// @description  可配置首选画质，不足时向下匹配；进入视频立即在后台选择固定档位，不使用 Auto，不弹出画质菜单。
 // @author       hmxxgit
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
@@ -544,17 +544,25 @@
         if ((state.menuAttempts || 0) >= 2) return { unavailable: true };
         const isExpanded = () => candidate.classList.contains('ytp-settings-shown') ||
             button.getAttribute('aria-expanded') === 'true';
+        // A stale aria-expanded / class can survive after the popup has closed.
+        // Treat the panel as the user's only when it is actually displayed;
+        // otherwise the script would open the quality list visibly.
+        const menuDisplayed = () => {
+            const menu = candidate.querySelector('.ytp-settings-menu');
+            return !!menu && getComputedStyle(menu).display !== 'none';
+        };
         // An already-open Settings panel belongs to the user, but it must not
         // block the fixed selection. openSettingsMenuItem switches that panel
         // to the quality list; leave the panel open and never steal its focus.
-        const userPanel = isExpanded();
+        const userPanel = menuDisplayed() && isExpanded();
         preparation = state.menu = { player: candidate, target, phase: 'preparing', userPanel };
         state.menuAttempts = (state.menuAttempts || 0) + 1;
         const previousFocus = document.activeElement;
         const attribute = 'data-yt-default-quality-preparing';
         const previousAttribute = candidate.getAttribute(attribute);
         const style = document.createElement('style');
-        style.textContent = `[${attribute}] .ytp-settings-menu{visibility:hidden!important}`;
+        style.textContent = `[${attribute}] .ytp-settings-menu,[${attribute}] .ytp-quality-menu` +
+            '{visibility:hidden!important;opacity:0!important;pointer-events:none!important}';
         if (!userPanel) {
             candidate.setAttribute(attribute, '');
             candidate.append(style);
@@ -572,7 +580,10 @@
                 // identity changes; a replacement/new identity is never toggled.
                 if (sameContent && !state.manualOverride && !preparation.userInteraction &&
                     !preparation.userPanel) {
-                    for (let n = 0; n < 2 && isExpanded(); n++) button.click();
+                    // Stop once the popup is actually hidden. A stale
+                    // aria-expanded must not trigger a second click that reopens it.
+                    const stillOpen = () => isExpanded() && menuDisplayed();
+                    for (let n = 0; n < 2 && stillOpen(); n++) button.click();
                 }
             } catch {
                 // A disposed popup must not prevent style/listener cleanup.
@@ -878,7 +889,7 @@
         session?.menu?.restore?.(); bindPlayer(null);
     });
     window[INSTANCE] = Object.freeze({
-        version: '2.5.0',
+        version: '2.5.1',
         // Read-only troubleshooting snapshot; never exposes GM storage or controls.
         get state() { return session ? { id: session.id, phase: session.phase,
             probes: session.probes, nativeAttempts: session.nativeAttempts || 0,
