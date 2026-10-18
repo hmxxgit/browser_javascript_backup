@@ -16,6 +16,10 @@ test('userscript metadata covers YouTube hosts and iframe execution', () => {
     const source = readFileSync(script, 'utf8');
     assert.match(source, /@match\s+\*:\/\/youtube\.com\/\*/);
     assert.match(source, /@match\s+\*:\/\/\*\.youtube\.com\/\*/);
+    assert.match(source, /@match\s+\*:\/\/youtube-nocookie\.com\/\*/);
+    assert.match(source, /@match\s+\*:\/\/\*\.youtube-nocookie\.com\/\*/);
+    assert.match(source, /@updateURL\s+https:\/\/raw\.githubusercontent\.com\/hmxxgit\/browser_javascript_backup\/main\/youtube-default-quality\.user\.js/);
+    assert.match(source, /@downloadURL\s+https:\/\/raw\.githubusercontent\.com\/hmxxgit\/browser_javascript_backup\/main\/youtube-default-quality\.user\.js/);
     assert.doesNotMatch(source, /@noframes/);
     for (const grant of ['GM_getValue', 'GM_setValue', 'GM_registerMenuCommand', 'unsafeWindow']) {
         assert.match(source, new RegExp(`@grant\\s+${grant}`));
@@ -392,6 +396,17 @@ test('navigation start cancels pending work before the URL changes', async () =>
     } finally { await context.close(); }
 });
 
+test('a lost navigation finish recovers within the watchdog window', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        await page.evaluate(() => { signal('yt-navigate-start'); model.levels = ['hd2160', 'hd1080']; });
+        await page.clock.runFor(13_000);
+        assert.deepEqual(await writes(page), []);
+        await page.clock.runFor(7_000);
+        assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
+    } finally { await context.close(); }
+});
+
 test('readiness getter exceptions recover; setter errors and no acknowledgement never retry', async () => {
     const ready = await setup({ readThrows: true });
     try {
@@ -476,7 +491,8 @@ for (const route of [`/shorts/${A}`, `/live/${A}`, `/embed/${A}`, `/v/${A}`, '/p
     });
 }
 
-for (const origin of ['https://youtube.com', 'http://www.youtube.com', 'https://m.youtube.com', 'https://music.youtube.com']) {
+for (const origin of ['https://youtube.com', 'http://www.youtube.com', 'https://m.youtube.com', 'https://music.youtube.com',
+    'https://www.youtube-nocookie.com']) {
     test(`YouTube host coverage: ${origin}`, async () => {
         const { page, context } = await setup({ origin });
         try { assert.equal((await writes(page)).length, 1); }
@@ -484,7 +500,8 @@ for (const origin of ['https://youtube.com', 'http://www.youtube.com', 'https://
     });
 }
 
-for (const origin of ['https://youtube.com.example.org', 'https://notyoutube.com']) {
+for (const origin of ['https://youtube.com.example.org', 'https://notyoutube.com',
+    'https://www.youtube-nocookie.com.example.org']) {
     test(`unrelated host is not a YouTube domain: ${origin}`, async () => {
         const { page, context } = await setup({ origin });
         try { assert.deepEqual(await writes(page), []); }
@@ -638,6 +655,8 @@ for (const [preferredHeight, levels, expected] of [
     [240, ['medium', 'small', 'tiny'], 'small'],
     [144, ['small', 'tiny'], 'tiny'],
     [4320, ['hd5760', 'hd2880', 'hd2160'], 'hd2880'],
+    [2160, ['highres', 'hd1080'], 'highres'],
+    [1080, ['highres', 'hd1080'], 'hd1080'],
 ]) {
     test(`saved preference ${preferredHeight} selects ${expected} without exceeding the ceiling`, async () => {
         const { page, context } = await setup({ preferredHeight, levels });
@@ -671,7 +690,9 @@ async function openConfig(page) {
 test('Tampermonkey menu opens one accessible configuration panel and close/Escape removes it', async () => {
     const { page, context } = await setup();
     try {
-        assert.equal(await page.evaluate(() => gmMenus.size), 1);
+        assert.equal(await page.evaluate(() => gmMenus.size), 2);
+        assert.equal(await page.evaluate(() => gmMenus.has('设置首选清晰度…')), true);
+        assert.equal(await page.evaluate(() => gmMenus.has('重新应用画质（覆盖本视频手动选择）')), true);
         const panel = await openConfig(page);
         assert.equal(await panel.getByLabel('首选清晰度').inputValue(), '1080');
         assert.equal(await panel.locator('option').count(), 9);
@@ -762,6 +783,30 @@ test('save-and-reload persists the chosen height before reloading the same docum
 });
 
 
+test('the reapply menu command restarts an expired visit without reloading', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        await page.clock.runFor(60_000);
+        assert.deepEqual(await writes(page), []);
+        await page.evaluate(() => { model.levels = ['hd2160', 'hd1080']; });
+        await page.evaluate(() => gmMenus.get('重新应用画质（覆盖本视频手动选择）')());
+        await page.clock.runFor(4_001);
+        assert.deepEqual((await writes(page)).at(-1), { id: A, min: 'hd1080', max: 'hd1080' });
+    } finally { await context.close(); }
+});
+
+test('the reapply menu command clears a manual lock for the current video', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        await page.getByRole('menuitemradio', { name: '480p', exact: true }).click();
+        await page.evaluate(() => { model.levels = ['hd2160', 'hd1080']; });
+        await page.evaluate(() => gmMenus.get('重新应用画质（覆盖本视频手动选择）')());
+        await page.clock.runFor(4_001);
+        assert.equal((await writes(page)).at(-1).min, 'hd1080');
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), false);
+    } finally { await context.close(); }
+});
+
 test('configuration opens and saves under YouTube-style Trusted Types enforcement', async () => {
     const { page, context, errors } = await setup({ trustedTypes: true });
     try {
@@ -851,6 +896,38 @@ test('manual selection after expiry remains protected when the first content pla
         await page.evaluate(() => { model.levels = ['hd1080', 'large']; model.state = 1; playerSignal('onStateChange'); });
         await signals(page);
         assert.deepEqual(await writes(page), [{ id: A, min: 'large', max: 'large' }]);
+    } finally { await context.close(); }
+});
+
+test('manual fixed quality is protected without the desktop quality-menu class', async () => {
+    const { page, context } = await setup({ levels: [], nativeMenu: true });
+    try {
+        await page.evaluate(() => document.querySelector('.ytp-quality-menu').classList.remove('ytp-quality-menu'));
+        await page.getByRole('menuitemradio', { name: '480p', exact: true }).click();
+        await page.evaluate(() => { model.levels = ['hd2160', 'hd1080']; });
+        await signals(page);
+        assert.deepEqual(await writes(page), [{ id: A, min: 'large', max: 'large' }]);
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), true);
+    } finally { await context.close(); }
+});
+
+test('non-quality radio items do not lock the manual override', async () => {
+    const { page, context } = await setup({ levels: [] });
+    try {
+        await page.evaluate(() => {
+            const speed = document.createElement('button');
+            speed.setAttribute('role', 'menuitemradio');
+            speed.innerHTML = '<span class="ytp-menuitem-label">1.5x</span>';
+            const autoCaptions = document.createElement('button');
+            autoCaptions.setAttribute('role', 'menuitemradio');
+            autoCaptions.innerHTML = '<span class="ytp-menuitem-label">Auto-generated</span>';
+            document.querySelector('.ytp-settings-menu').append(speed, autoCaptions);
+        });
+        await page.getByRole('menuitemradio', { name: '1.5x', exact: true }).click();
+        await page.getByRole('menuitemradio', { name: 'Auto-generated', exact: true }).click();
+        await page.evaluate(() => { model.levels = ['hd1080']; });
+        await page.clock.runFor(4_001);
+        assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
     } finally { await context.close(); }
 });
 
@@ -1175,10 +1252,28 @@ test('a user focusing another control during async preparation keeps that focus'
     try {
         await page.evaluate(() => { const input = document.createElement('input'); input.id = 'user-search'; document.body.append(input); });
         await page.locator('#user-search').click();
-        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 0);
+        // Unrelated input must not spend the preparation attempt: the hidden
+        // panel stays pending until its own async deadline or the option list.
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 1);
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.menuPhase), 'pending');
         await page.clock.runFor(5_000);
         assert.equal(await page.evaluate(() => document.activeElement.id), 'user-search');
         assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.manualOverride), false);
+    } finally { await context.close(); }
+});
+
+test('unrelated trusted input during async preparation keeps the preparation alive', async () => {
+    const { page, context } = await setup({ nativeMenu: true, lazyNativeMenu: true,
+        lazyMenuAsync: true, lazyMenuDelay: 1_500 });
+    try {
+        await page.locator('#movie_player video').click({ position: { x: 20, y: 20 } });
+        assert.equal(await page.locator('[data-yt-default-quality-preparing]').count(), 1);
+        assert.equal(await page.evaluate(() => __youtubeDefaultQualityOnceV1__.state.menuPhase), 'pending');
+        await page.keyboard.press('k');
+        await page.clock.runFor(6_000);
+        assert.equal(await page.evaluate(() => menuOpens), 1);
+        assert.equal(await page.evaluate(() => nativeActions), 1);
+        assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
     } finally { await context.close(); }
 });
 

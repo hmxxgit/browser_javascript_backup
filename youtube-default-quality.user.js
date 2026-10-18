@@ -1,10 +1,13 @@
 // ==UserScript==
 // @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      2.2.0
+// @version      2.3.0
 // @description  可配置首选画质，不足时向下匹配；固定画质确认后不再干预，尊重用户手动选择。
+// @author       hmxxgit
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
+// @match        *://youtube-nocookie.com/*
+// @match        *://*.youtube-nocookie.com/*
 // @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -14,12 +17,16 @@
 // @license      MIT
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
 // @supportURL   https://github.com/hmxxgit/browser_javascript_backup/issues
+// @updateURL    https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/youtube-default-quality.user.js
+// @downloadURL  https://raw.githubusercontent.com/hmxxgit/browser_javascript_backup/main/youtube-default-quality.user.js
 // ==/UserScript==
 
 (() => {
     'use strict';
 
-    if (location.hostname !== 'youtube.com' && !location.hostname.endsWith('.youtube.com')) return;
+    const host = location.hostname;
+    if (host !== 'youtube.com' && host !== 'youtube-nocookie.com' &&
+        !host.endsWith('.youtube.com') && !host.endsWith('.youtube-nocookie.com')) return;
 
     // Keep player calls in the page world even when GM permissions are enabled.
     const window = typeof unsafeWindow === 'object' ? unsafeWindow : globalThis.window;
@@ -29,14 +36,6 @@
     // Do not use setPlaybackQuality(): it is a no-op in the inspected player.
     const INSTANCE = '__youtubeDefaultQualityOnceV1__';
     if (window[INSTANCE]) return;
-    window[INSTANCE] = Object.freeze({
-        version: '2.2.0',
-        // Read-only troubleshooting snapshot; never exposes GM storage or controls.
-        get state() { return session ? { id: session.id, phase: session.phase,
-            probes: session.probes, nativeAttempts: session.nativeAttempts || 0,
-            manualOverride: session.manualOverride, menuPhase: session.menu?.phase || 'idle',
-            menuAttempts: session.menuAttempts || 0, navigating, timerPending: timer !== null } : null; },
-    });
 
     const PREFERENCE_KEY = 'youtube-default-quality.preferred-height';
     const QUALITY_CHOICES = [4320, 2160, 1440, 1080, 720, 480, 360, 240, 144];
@@ -119,12 +118,14 @@
         dialog.showModal();
         select.focus();
     }
-    if (typeof GM_registerMenuCommand === 'function') {
-        GM_registerMenuCommand('设置首选清晰度…', openConfig, { accessKey: 'q', clickedFrame: true });
-    }
-
     const WAIT_MS = 45_000;
     const MAX_PROBES = 30;
+    // YouTube's SPA router normally emits both navigation events. A cancelled
+    // or interrupted navigation must not leave the visit paused forever.
+    const NAVIGATION_TIMEOUT_MS = 15_000;
+    const LEGACY_QUALITY_HEIGHTS = { tiny: 144, small: 240, medium: 360, large: 480, highres: 2160 };
+    const REAPPLY_MENU_LABEL = '重新应用画质（覆盖本视频手动选择）';
+    const RETRY_HINT = '可在 Tampermonkey 菜单选择“重新应用画质”重试。';
     const PLAYER_EVENTS = ['onReady', 'onStateChange', 'onPlaybackQualityChange', 'videodatachange'];
     const PLAYER_SELECTOR = '#movie_player, #shorts-player, .html5-video-player';
     // Memory belongs to this document only. A full reload of the same video
@@ -132,6 +133,7 @@
     let session = null;
     let player = null;
     let timer = null;
+    let navigationWatchdog = null;
     let navigating = false;
     let suspended = false;
     let refreshQueued = false;
@@ -185,6 +187,26 @@
     function cancelTimer() {
         if (timer !== null) clearTimeout(timer);
         timer = null;
+    }
+
+    function startNavigation() {
+        navigating = true;
+        cancelTimer();
+        session?.menu?.restore?.();
+        if (navigationWatchdog !== null) clearTimeout(navigationWatchdog);
+        navigationWatchdog = setTimeout(() => {
+            navigationWatchdog = null;
+            if (!navigating) return;
+            navigating = false;
+            console.warn('[YouTube Default Quality] 未收到导航结束事件；已恢复待命。' + RETRY_HINT);
+            refresh();
+        }, NAVIGATION_TIMEOUT_MS);
+    }
+
+    function endNavigation() {
+        navigating = false;
+        if (navigationWatchdog !== null) clearTimeout(navigationWatchdog);
+        navigationWatchdog = null;
     }
 
     function finish(state, phase) {
@@ -248,15 +270,87 @@
         if (session) schedule(session, 0);
     }
 
+    // Explicit recovery path: a visit that expired, was manually locked or lost
+    // a navigation event can be restarted without reloading the page.
+    function reapplyCurrent() {
+        if (suspended) return;
+        if (!session) { refresh(); return; }
+        session.menu?.restore?.();
+        session.menu = null;
+        session.manualOverride = false;
+        session.phase = 'waiting';
+        session.probes = 0;
+        session.deadline = Date.now() + WAIT_MS;
+        session.readyMedia = null;
+        session.pendingNative = null;
+        session.playbackStarted = false;
+        session.menuAttempts = 0;
+        endNavigation();
+        cancelTimer();
+        refresh();
+        if (session) schedule(session, 0);
+    }
+
+    function qualityHeight(level) {
+        if (typeof level !== 'string') return 0;
+        if (/^hd\d+$/.test(level)) return Number(level.slice(2));
+        return LEGACY_QUALITY_HEIGHTS[level] || 0;
+    }
+
     function chooseQuality(levels, preferredHeight) {
         if (!Array.isArray(levels)) return null;
-        const legacy = { tiny: 144, small: 240, medium: 360, large: 480 };
-        const height = q => /^hd\d+$/.test(q) ? Number(q.slice(2)) : legacy[q];
         // Rank actual options only. Unknown IDs cannot safely be placed below a
         // user-selected ceiling, so do not guess or silently choose a higher tier.
-        const available = [...new Set(levels.filter(q => typeof q === 'string' &&
-            height(q) > 0 && height(q) <= preferredHeight))];
-        return available.reduce((best, q) => !best || height(q) > height(best) ? q : best, null);
+        const available = [...new Set(levels.filter(q =>
+            qualityHeight(q) > 0 && qualityHeight(q) <= preferredHeight))];
+        return available.reduce((best, q) =>
+            !best || qualityHeight(q) > qualityHeight(best) ? q : best, null);
+    }
+
+    function normalizeLabel(text) {
+        return text.replace(/\s+/g, ' ').trim();
+    }
+
+    // Recognise quality choices without relying on the desktop-only
+    // `.ytp-quality-menu` container, so manual picks on other player surfaces
+    // still hand control back to the user.
+    function qualityLabels(candidate) {
+        const labels = new Set(['auto', '自动']);
+        try {
+            const data = candidate?.getAvailableQualityData?.();
+            if (Array.isArray(data)) {
+                for (const item of data) {
+                    if (item && typeof item.qualityLabel === 'string') {
+                        labels.add(normalizeLabel(item.qualityLabel));
+                    }
+                }
+            }
+        } catch { /* the container match below still covers the desktop menu */ }
+        try {
+            for (const level of candidate?.getAvailableQualityLevels?.() || []) {
+                const height = qualityHeight(level);
+                if (height > 0) labels.add(`${height}p`);
+            }
+        } catch { /* a disposed player cannot contribute labels */ }
+        return labels;
+    }
+
+    function qualityMenuItem(target) {
+        const item = target.closest?.('[role="menuitemradio"]');
+        if (!item || item.getAttribute('aria-disabled') === 'true') return null;
+        const owner = item.closest(PLAYER_SELECTOR);
+        if (!owner) return null;
+        // The desktop quality panel is unambiguous; only fall back to label
+        // matching for players that use a different container.
+        if (item.closest('.ytp-quality-menu')) return item;
+        const label = item.querySelector('.ytp-menuitem-label');
+        const text = normalizeLabel((label || item).textContent || '').toLowerCase();
+        if (!text) return null;
+        for (const known of qualityLabels(owner)) {
+            const lower = known.toLowerCase();
+            if (text === lower || text.startsWith(`${lower} `)) return item;
+        }
+        return /^(auto|自动)(\s*\([^)]*\))?$/i.test(text) ? item : null;
     }
 
     function matches(state, candidate) {
@@ -278,12 +372,11 @@
         if (typeof candidate.getAvailableQualityData !== 'function') return null;
         const data = candidate.getAvailableQualityData();
         if (!Array.isArray(data)) return null;
-        const normalize = text => text.replace(/\s+/g, ' ').trim();
         // Match current, playable, non-paygated labels exactly. Do not guess a menu
         // index, translate "Auto", or accidentally choose an enhanced-bitrate tier.
         const labels = new Set(data.filter(q => q && typeof q === 'object' &&
             q.quality === target && q.isPlayable === true &&
-            !q.paygatedQualityDetails && typeof q.qualityLabel === 'string').map(q => normalize(q.qualityLabel)));
+            !q.paygatedQualityDetails && typeof q.qualityLabel === 'string').map(q => normalizeLabel(q.qualityLabel)));
         for (const item of candidate.querySelectorAll('.ytp-quality-menu [role="menuitemradio"]')) {
             if (item.closest(PLAYER_SELECTOR) !== candidate) continue;
             if (item.getAttribute('aria-disabled') === 'true') continue;
@@ -291,7 +384,7 @@
             if (!label) continue;
             // HD/4K/HDR badges are presentation, not part of qualityLabel.
             for (const badge of label.querySelectorAll('sup')) badge.remove();
-            if (labels.has(normalize(label.textContent))) return item;
+            if (labels.has(normalizeLabel(label.textContent))) return item;
         }
         return null;
     }
@@ -365,7 +458,8 @@
                 style.remove();
                 if (previousAttribute === null) candidate.removeAttribute(attribute);
                 else candidate.setAttribute(attribute, previousAttribute);
-                if (!preparation.userInteraction && !state.manualOverride && !navigating && !suspended &&
+                if (!preparation.userInteraction && !preparation.focusMoved &&
+                    !state.manualOverride && !navigating && !suspended &&
                     session === state && candidate.isConnected &&
                     (!urlVideoId() || urlVideoId() === state.id) && playerVideoId(candidate) === state.id &&
                     previousFocus?.isConnected && document.activeElement !== previousFocus) {
@@ -422,7 +516,7 @@
         if (candidate?.classList.contains('ad-showing') || candidate?.classList.contains('ad-interrupting')) state.readyMedia = null;
         if (Date.now() >= state.deadline || state.probes >= MAX_PROBES) {
             finish(state, 'expired');
-            if (state.id) console.warn('[YouTube Default Quality] 本轮等待超时；首次主视频播放仍可触发一次就绪检查。');
+            if (state.id) console.warn('[YouTube Default Quality] 本轮等待超时；首次主视频播放仍可触发一次就绪检查。' + RETRY_HINT);
             return;
         }
         state.probes += 1;
@@ -468,7 +562,7 @@
                     if (preference === pending.target) { finish(state, 'applied'); return; }
                     if (preference !== 'auto' || state.nativeAttempts >= 3) {
                         finish(state, 'attempted');
-                        console.warn('[YouTube Default Quality] 未确认固定画质；已停止有限尝试。');
+                        console.warn('[YouTube Default Quality] 未确认固定画质；已停止有限尝试。' + RETRY_HINT);
                         return;
                     }
                     state.pendingNative = null;
@@ -520,7 +614,7 @@
                         schedule(state, 1_000);
                     } else {
                         finish(state, 'attempted');
-                        console.warn('[YouTube Default Quality] 已请求画质，未确认首选档位；不重复设置。');
+                        console.warn('[YouTube Default Quality] 已请求画质，未确认首选档位；不重复设置。' + RETRY_HINT);
                     }
                     return;
                 } finally { selection.restore(); }
@@ -530,7 +624,7 @@
             // choice, so only read/readiness failures are eligible for retries.
             if (state.phase !== 'waiting') {
                 finish(state, 'attempted');
-                console.warn('[YouTube Default Quality] 设置接口异常；为保护手动选择，不再重试。', error);
+                console.warn('[YouTube Default Quality] 设置接口异常；为保护手动选择，不再重试。' + RETRY_HINT, error);
                 return;
             }
         }
@@ -539,54 +633,67 @@
 
     function yieldToUser(event) {
         if (!event.isTrusted || suspended || !(event.target instanceof Element)) return;
+        const pending = session?.menu;
+        const owner = event.target.closest(PLAYER_SELECTOR);
+        const settingsTarget = event.target.closest('.ytp-settings-menu, .ytp-settings-button');
         // A user can focus Search or another control while a menu is being built.
-        // Their input cancels our temporary UI ownership, even if it isn't itself
-        // a quality selection. Tab/arrow keys still do not lock manualOverride.
-        if (session?.menu?.phase === 'pending') {
-            session.menu.userInteraction = true;
-            session.menu.restore?.();
-            session.menu.phase = 'failed';
-            session.menu.nextAt = Date.now() + 500;
+        // Remember that focus moved, but only a settings interaction aborts the
+        // preparation; unrelated input must not spend one of its two attempts.
+        if (pending?.phase === 'pending') {
+            pending.focusMoved = true;
+            if (owner === pending.player && settingsTarget) {
+                pending.userInteraction = true;
+                pending.restore?.();
+                pending.phase = 'failed';
+                pending.nextAt = Date.now() + 500;
+            }
         }
         if (event.type === 'keydown' && !['Enter', ' ', 'Spacebar'].includes(event.key)) return;
         if (event.type === 'pointerdown' && event.button !== 0) return;
-        const option = event.target.closest('.ytp-quality-menu [role="menuitemradio"]');
-        const owner = event.target.closest(PLAYER_SELECTOR);
-        if (!owner) return;
+        const option = qualityMenuItem(event.target);
+        if (!option) return;
+        const optionOwner = option.closest(PLAYER_SELECTOR);
+        if (!optionOwner) return;
         // Pointer/keyboard interaction during our async preparation belongs to the
         // user. Remove temporary hiding without toggling or stealing their focus.
-        if (session?.menu?.player === owner && event.target.closest('.ytp-settings-menu, .ytp-settings-button')) {
+        if (session?.menu?.player === optionOwner && settingsTarget) {
             session.menu.userInteraction = true;
+            session.menu.focusMoved = true;
             session.menu.restore?.();
             if (session.menu.phase === 'pending') {
                 session.menu.phase = 'failed';
                 session.menu.nextAt = Date.now() + 500;
             }
         }
-        if (!option || option.getAttribute('aria-disabled') === 'true') return;
         const expected = urlVideoId();
-        const ownerId = playerVideoId(owner);
+        const ownerId = playerVideoId(optionOwner);
         if (expected && ownerId && expected !== ownerId) return;
         refresh();
         // Even before APIs attach, an actual choice on the current URL must win.
         // A known different player's choice must never lock the new URL's visit.
         if (!session || (expected ? session.id !== expected :
-            ownerId ? session.id !== ownerId : owner !== findPlayer())) return;
+            ownerId ? session.id !== ownerId : optionOwner !== findPlayer())) return;
         session.manualOverride = true;
-        if (!session.id) session.manualPlayer = owner;
+        if (!session.id) session.manualPlayer = optionOwner;
         finish(session, 'manual');
+    }
+
+    if (typeof GM_registerMenuCommand === 'function') {
+        try {
+            GM_registerMenuCommand('设置首选清晰度…', openConfig, { accessKey: 'q', clickedFrame: true });
+            GM_registerMenuCommand(REAPPLY_MENU_LABEL, reapplyCurrent, { accessKey: 'r', clickedFrame: true });
+        } catch (error) {
+            // A menu failure must not prevent the quality controller from starting.
+            console.warn('[YouTube Default Quality] 菜单命令注册失败。', error);
+        }
     }
 
     for (const name of ['pointerdown', 'click', 'keydown']) {
         document.addEventListener(name, yieldToUser, true);
     }
-    document.addEventListener('yt-navigate-start', () => {
-        navigating = true;
-        cancelTimer();
-        session?.menu?.restore?.();
-    });
+    document.addEventListener('yt-navigate-start', startNavigation);
     document.addEventListener('yt-navigate-finish', () => {
-        navigating = false;
+        endNavigation();
         refresh();
     });
     for (const name of ['DOMContentLoaded', 'yt-page-data-updated', 'yt-player-updated']) {
@@ -608,9 +715,17 @@
     // Chromium's committed-entry event also covers pushState/replaceState without
     // patching History, in case a transition omits YouTube's navigation events.
     window.navigation?.addEventListener('currententrychange', requestRefresh);
-    window.addEventListener('pageshow', () => { suspended = false; navigating = false; refresh(); });
+    window.addEventListener('pageshow', () => { suspended = false; endNavigation(); refresh(); });
     window.addEventListener('pagehide', () => {
-        suspended = true; cancelTimer(); session?.menu?.restore?.(); bindPlayer(null);
+        suspended = true; cancelTimer(); endNavigation(); session?.menu?.restore?.(); bindPlayer(null);
+    });
+    window[INSTANCE] = Object.freeze({
+        version: '2.3.0',
+        // Read-only troubleshooting snapshot; never exposes GM storage or controls.
+        get state() { return session ? { id: session.id, phase: session.phase,
+            probes: session.probes, nativeAttempts: session.nativeAttempts || 0,
+            manualOverride: session.manualOverride, menuPhase: session.menu?.phase || 'idle',
+            menuAttempts: session.menuAttempts || 0, navigating, timerPending: timer !== null } : null; },
     });
     refresh();
 })();
