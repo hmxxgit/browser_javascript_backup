@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      2.4.0
-// @description  可配置首选画质，不足时向下匹配；进入视频强制固定档位，不使用 Auto。
+// @version      2.5.0
+// @description  可配置首选画质，不足时向下匹配；进入视频立即选择固定档位，不使用 Auto。
 // @author       hmxxgit
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
@@ -123,6 +123,12 @@
     // YouTube's SPA router normally emits both navigation events. A cancelled
     // or interrupted navigation must not leave the visit paused forever.
     const NAVIGATION_TIMEOUT_MS = 15_000;
+    // Apply as soon as metadata exists; a 250ms source check coalesces startup
+    // source swaps without the old two-second visible delay.
+    const MEDIA_STABLE_MS = 250;
+    // After the first selection, verify the user-visible menu again; YouTube's
+    // startup controller may reset a very early fixed choice to Auto.
+    const APPLIED_CHECK_DELAYS = [1_500, 3_000];
     const LEGACY_QUALITY_HEIGHTS = { tiny: 144, small: 240, medium: 360, large: 480, highres: 2160 };
     const REAPPLY_MENU_LABEL = '重新应用画质（覆盖本视频手动选择）';
     const RETRY_HINT = '可在 Tampermonkey 菜单选择“重新应用画质”重试。';
@@ -133,6 +139,8 @@
     let session = null;
     let player = null;
     let timer = null;
+    let timerDue = 0;
+    let verifyTimer = null;
     let navigationWatchdog = null;
     let navigating = false;
     let suspended = false;
@@ -187,11 +195,13 @@
     function cancelTimer() {
         if (timer !== null) clearTimeout(timer);
         timer = null;
+        timerDue = 0;
     }
 
     function startNavigation() {
         navigating = true;
         cancelTimer();
+        cancelVerify();
         session?.menu?.restore?.();
         if (navigationWatchdog !== null) clearTimeout(navigationWatchdog);
         navigationWatchdog = setTimeout(() => {
@@ -209,6 +219,55 @@
         navigationWatchdog = null;
     }
 
+    function cancelVerify() {
+        if (verifyTimer !== null) clearTimeout(verifyTimer);
+        verifyTimer = null;
+    }
+
+    // An immediate selection is required, but YouTube can replace its startup
+    // controller shortly afterwards and silently reset the menu to Auto. Check
+    // the user-visible state twice after applying and correct a reset.
+    function scheduleAppliedCheck(state, target, index = 0) {
+        cancelVerify();
+        if (!target || index >= APPLIED_CHECK_DELAYS.length) return;
+        verifyTimer = setTimeout(() => {
+            verifyTimer = null;
+            if (session !== state || state.phase !== 'applied' || state.manualOverride ||
+                suspended || navigating || !state.id) return;
+            const candidate = findPlayer();
+            const expected = urlVideoId();
+            if (!candidate || !candidate.isConnected || playerVideoId(candidate) !== state.id ||
+                (expected && expected !== state.id)) return;
+            if (candidate.classList.contains('ad-showing') || candidate.classList.contains('ad-interrupting') ||
+                candidate.getVideoData?.()?.isAd) {
+                scheduleAppliedCheck(state, target, index + 1);
+                return;
+            }
+            const summaryOk = summaryMatches(qualitySummaryText(candidate), target);
+            const checkedOk = summaryMatches(nativeCheckedQuality(candidate), target);
+            if (summaryOk !== false && checkedOk !== false) {
+                // Confirm once more to catch a late startup reset.
+                if (index + 1 < APPLIED_CHECK_DELAYS.length) scheduleAppliedCheck(state, target, index + 1);
+                return;
+            }
+            state.corrections = (state.corrections || 0) + 1;
+            if (state.corrections > 2) {
+                console.warn('[YouTube Default Quality] 启动后画质反复回落到 Auto；已停止自动纠正。' + RETRY_HINT);
+                return;
+            }
+            state.phase = 'waiting';
+            state.probes = 0;
+            state.deadline = Date.now() + WAIT_MS;
+            state.readyMedia = null;
+            state.pendingNative = null;
+            state.menuAttempts = 0;
+            state.nativeAttempts = 0;
+            cancelTimer();
+            console.info('[YouTube Default Quality] 检测到原生画质回落到 Auto，正在重新应用固定档位。');
+            schedule(state, 0);
+        }, APPLIED_CHECK_DELAYS[index]);
+    }
+
     function finish(state, phase) {
         if (session !== state) return;
         state.phase = state.manualOverride ? 'manual' : phase;
@@ -217,6 +276,10 @@
         cancelTimer();
         state.menu?.restore?.();
         state.menu = null;
+        cancelVerify();
+        if (state.phase === 'applied' && state.appliedTarget && state.appliedViaNative) {
+            scheduleAppliedCheck(state, state.appliedTarget);
+        }
     }
 
     function bindPlayer(next) {
@@ -236,11 +299,21 @@
 
     function schedule(state, delay) {
         if (session !== state || state.manualOverride || state.phase !== 'waiting' ||
-            suspended || navigating || timer !== null) return;
+            suspended || navigating) return;
+        const now = Date.now();
+        const due = now + Math.max(0, Math.min(delay, state.deadline - now));
+        // A media/player notification can arrive while a long retry is pending.
+        // Pull the probe forward instead of waiting for the old timer.
+        if (timer !== null) {
+            if (due >= timerDue) return;
+            clearTimeout(timer);
+        }
+        timerDue = due;
         timer = setTimeout(() => {
             timer = null;
+            timerDue = 0;
             probe(state);
-        }, Math.max(0, Math.min(delay, state.deadline - Date.now())));
+        }, Math.max(0, due - now));
     }
 
     // One state per consecutive active video, not a permanent map of viewed IDs.
@@ -256,11 +329,12 @@
             const bootstrapManual = session && !session.id && session.manualOverride &&
                 session.manualPlayer === candidate && session.bootstrapUrl === location.href;
             cancelTimer();
+            cancelVerify();
             session?.menu?.restore?.();
             // A null-ID bootstrap also has a bound: discover delayed players on
             // channel/playlist/home pages without requiring a /watch URL first.
             session = { id, phase: bootstrapManual ? 'manual' : 'waiting', manualOverride: !!bootstrapManual,
-                probes: 0, deadline: Date.now() + WAIT_MS,
+                probes: 0, deadline: Date.now() + WAIT_MS, corrections: 0,
                 bootstrapUrl: location.href, playbackStarted: false, preferredHeight: readPreference() };
         }
         // The initial element can exist before YouTube attaches its API. Do not bind
@@ -286,6 +360,8 @@
         session.playbackStarted = false;
         session.menuAttempts = 0;
         session.nativeAttempts = 0;
+        session.corrections = 0;
+        cancelVerify();
         endNavigation();
         cancelTimer();
         refresh();
@@ -567,7 +643,7 @@
             return;
         }
         state.probes += 1;
-        const retryDelay = Math.min(500 * (2 ** (state.probes - 1)), 2_000);
+        const retryDelay = Math.min(250 * (2 ** (state.probes - 1)), 1_000);
         bindPlayer(typeof candidate?.getVideoData === 'function' ? candidate : null);
         try {
             if (typeof candidate?.getVideoData === 'function' && candidate.getVideoData()?.isAd) state.readyMedia = null;
@@ -577,12 +653,11 @@
                 !candidate.classList.contains('ad-showing') &&
                 !candidate.classList.contains('ad-interrupting') &&
                 !candidate.getVideoData()?.isAd) {
-                // The quality list and video ID can be ready BEFORE YouTube
-                // replaces its startup controller, which resets fixed quality to
-                // Auto. Wait for actual media readiness and a stable source first.
+                // Apply as soon as metadata exists instead of waiting two
+                // seconds. A very early click can be reset by YouTube's startup
+                // controller; scheduleAppliedCheck() corrects that afterwards.
                 const video = candidate.querySelector('video.html5-main-video') || candidate.querySelector('video');
-                const playbackState = candidate.getPlayerState?.();
-                if (!video || video.readyState < 2 || ![1, 2].includes(playbackState)) {
+                if (!video || video.readyState < 1) {
                     state.readyMedia = null;
                     schedule(state, retryDelay); return;
                 }
@@ -591,8 +666,8 @@
                     state.readyMedia.video !== video || state.readyMedia.source !== source) {
                     state.readyMedia = { player: candidate, video, source, since: Date.now() };
                 }
-                if (Date.now() - state.readyMedia.since < 2_000) {
-                    schedule(state, Math.max(500, 2_000 - (Date.now() - state.readyMedia.since))); return;
+                if (Date.now() - state.readyMedia.since < MEDIA_STABLE_MS) {
+                    schedule(state, Math.max(100, MEDIA_STABLE_MS - (Date.now() - state.readyMedia.since))); return;
                 }
                 // One policy for every content type: live, premiere, replay,
                 // Shorts and embeds. Only actual quality availability matters.
@@ -610,6 +685,7 @@
                     const checkedOk = summaryMatches(nativeCheckedQuality(candidate), pending.target);
                     const mismatch = summaryOk === false || checkedOk === false;
                     if (preference === pending.target && !mismatch) {
+                        state.appliedTarget = pending.target;
                         finish(state, 'applied'); return;
                     }
                     if (state.nativeAttempts >= 3 ||
@@ -656,6 +732,7 @@
                         // getPreferredQuality() may report the fixed target while
                         // the native menu still says Auto. Defer the verdict to a
                         // delayed check that also reads the visible summary.
+                        state.appliedViaNative = true;
                         state.phase = 'waiting';
                         state.pendingNative = { target, checkAt: Date.now() + 1_000 };
                         schedule(state, 1_000);
@@ -669,6 +746,8 @@
                     const preference = typeof candidate.getPreferredQuality === 'function' ?
                         candidate.getPreferredQuality() : null;
                     if (preference === target) {
+                        state.appliedTarget = target;
+                        state.appliedViaNative = false;
                         finish(state, 'applied');
                     } else {
                         finish(state, 'attempted');
@@ -744,7 +823,9 @@
             session.pendingNative = null;
             session.nativeAttempts = 0;
             session.menuAttempts = 0;
+            session.corrections = 0;
             cancelTimer();
+            cancelVerify();
             schedule(session, 600);
             console.info('[YouTube Default Quality] 已忽略 Auto，将重新应用固定画质。' + RETRY_HINT);
             return;
@@ -793,10 +874,11 @@
     window.navigation?.addEventListener('currententrychange', requestRefresh);
     window.addEventListener('pageshow', () => { suspended = false; endNavigation(); refresh(); });
     window.addEventListener('pagehide', () => {
-        suspended = true; cancelTimer(); endNavigation(); session?.menu?.restore?.(); bindPlayer(null);
+        suspended = true; cancelTimer(); cancelVerify(); endNavigation();
+        session?.menu?.restore?.(); bindPlayer(null);
     });
     window[INSTANCE] = Object.freeze({
-        version: '2.4.0',
+        version: '2.5.0',
         // Read-only troubleshooting snapshot; never exposes GM storage or controls.
         get state() { return session ? { id: session.id, phase: session.phase,
             probes: session.probes, nativeAttempts: session.nativeAttempts || 0,
