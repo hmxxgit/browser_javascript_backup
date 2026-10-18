@@ -20,6 +20,5 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: node --check chatgpt-custom-ui.user.js
-      - run: node --check youtube-default-quality.user.js
       - run: node --check x-custom-ui.user.js
       - run: npm test
