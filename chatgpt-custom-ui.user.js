@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.53
+// @version      1.4.54
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -900,6 +900,17 @@
     const modernMessageStyle = document.createElement("style");
     modernMessageStyle.setAttribute("data-tm-chatgpt-modern-message-css", "true");
     modernMessageStyle.textContent = `
+        /* 新版会话使用两层缓存高度：总高度与每轮消息高度。
+         * 正文字体、宽度或 DIL 图表改变后，发送下一问时旧高度可能
+         * 暂时小于已挂载内容，后续问题便会覆盖上一轮回复。
+         * 用内容固有高度作为下限，同时保护总滚动范围；保留原生
+         * 缓存高度及空占位节点，不改 React 的节点或内联测量值。
+         */
+        main [data-chatgpt-conversation-selection-target="true"] > div:has(> div > div > [data-turn-key]),
+        main [data-chatgpt-conversation-selection-target="true"] > div > div > div:has(> [data-turn-key]) {
+            min-height: min-content !important;
+        }
+
         main [data-markdown-text-style="assistant-message"],
         main [data-markdown-text-style="assistant-message"] p,
         main [data-markdown-text-style="assistant-message"] li,
@@ -989,7 +1000,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.53
+     * ChatGPT Custom UI v1.4.54
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
