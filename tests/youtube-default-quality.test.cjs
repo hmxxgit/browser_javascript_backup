@@ -243,7 +243,7 @@ test('viewing Settings or navigating quality options does not cancel pending aut
     const { page, context } = await setup({ levels: [] });
     try {
         await page.getByRole('button', { name: 'Settings', exact: true }).click();
-        await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).press('ArrowUp');
+        await page.getByRole('menuitemradio', { name: '480p', exact: true }).press('ArrowUp');
         await page.evaluate(() => { model.levels = ['hd1080']; });
         await page.clock.runFor(4_001);
         assert.deepEqual(await writes(page), [{ id: A, min: 'hd1080', max: 'hd1080' }]);
@@ -1240,6 +1240,19 @@ test('a stale expanded attribute does not open the quality list visibly', async 
         assert.equal(await page.evaluate(() => model.preferred), 'hd1080');
         assert.equal(await page.locator('.ytp-settings-button').getAttribute('aria-expanded'), 'false');
         assert.ok((await page.evaluate(() => settingsClicks)) >= 1); // the script closed its hidden popup
+    } finally { await context.close(); }
+});
+
+test('the user-facing quality list has no Auto option', async () => {
+    const { page, context } = await setup({ mediaReady: 0, setupClock: 0 });
+    try {
+        await page.locator('.ytp-settings-button').click();
+        await page.clock.runFor(100);
+        const labels = await page.evaluate(() => [...document.querySelectorAll('.ytp-quality-menu [role="menuitemradio"]')]
+            .map(item => item.textContent.replace(/\s+/g, ' ').trim()));
+        assert.ok(labels.length >= 3);
+        assert.ok(!labels.some(label => /^Auto/i.test(label)));
+        assert.ok(labels.some(label => /^1080p/.test(label)));
     } finally { await context.close(); }
 });
 

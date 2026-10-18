@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Default Quality (Configurable)
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      2.5.1
-// @description  可配置首选画质，不足时向下匹配；进入视频立即在后台选择固定档位，不使用 Auto，不弹出画质菜单。
+// @version      2.6.0
+// @description  可配置首选画质，不足时向下匹配；后台固定选择，不弹出画质菜单，并从画质列表移除 Auto。
 // @author       hmxxgit
 // @match        *://youtube.com/*
 // @match        *://*.youtube.com/*
@@ -141,6 +141,10 @@
     let timer = null;
     let timerDue = 0;
     let verifyTimer = null;
+    let autoMenuObserver = null;
+    let autoMenuPlayer = null;
+    let autoMenuElement = null;
+    let autoSweepQueued = false;
     let navigationWatchdog = null;
     let navigating = false;
     let suspended = false;
@@ -295,6 +299,12 @@
                 try { player.addEventListener(name, requestRefresh); } catch { /* not ready yet */ }
             }
         }
+        if (player) {
+            watchAutoMenu(player);
+            queueAutoMenuSweep(player);
+        } else {
+            stopAutoMenuWatch();
+        }
     }
 
     function schedule(state, delay) {
@@ -434,6 +444,55 @@
         const label = item.querySelector('.ytp-menuitem-label') || item;
         const text = normalizeLabel(label.textContent || '');
         return /^(auto|自动)(\s*\([^)]*\))?$/i.test(text);
+    }
+
+    function stripAutoOptions(candidate) {
+        if (!candidate) return;
+        for (const item of [...candidate.querySelectorAll('.ytp-quality-menu [role="menuitemradio"]')]) {
+            if (isAutoMenuItem(item)) item.remove();
+        }
+    }
+
+    function queueAutoMenuSweep(candidate) {
+        autoMenuPlayer = candidate;
+        if (autoSweepQueued) return;
+        autoSweepQueued = true;
+        queueMicrotask(() => {
+            autoSweepQueued = false;
+            const player = autoMenuPlayer;
+            if (!player || !player.isConnected) return;
+            // Never touch the script's own temporarily hidden menu; it is
+            // closed immediately and the user cannot see its options.
+            if (player.hasAttribute('data-yt-default-quality-preparing')) return;
+            const menu = player.querySelector('.ytp-settings-menu');
+            if (!menu) return;
+            const open = player.classList.contains('ytp-settings-shown') ||
+                player.querySelector('.ytp-settings-button')?.getAttribute('aria-expanded') === 'true';
+            if (!open) return;
+            stripAutoOptions(player);
+        });
+    }
+
+    // Remove Auto from the user-facing quality list. The observer is scoped to
+    // the Settings menu and only runs while that menu is actually displayed.
+    function watchAutoMenu(candidate) {
+        if (!candidate || !candidate.isConnected) return;
+        const menu = candidate.querySelector('.ytp-settings-menu');
+        if (!menu) return;
+        if (autoMenuObserver && autoMenuPlayer === candidate && autoMenuElement === menu) return;
+        autoMenuObserver?.disconnect();
+        autoMenuObserver = new MutationObserver(() => queueAutoMenuSweep(candidate));
+        autoMenuObserver.observe(menu, { childList: true, subtree: true });
+        autoMenuPlayer = candidate;
+        autoMenuElement = menu;
+    }
+
+    function stopAutoMenuWatch() {
+        autoMenuObserver?.disconnect();
+        autoMenuObserver = null;
+        autoMenuPlayer = null;
+        autoMenuElement = null;
+        autoSweepQueued = false;
     }
 
     // getPreferredQuality() can report the requested fixed tier while YouTube's
@@ -599,6 +658,9 @@
                     previousFocus?.isConnected && document.activeElement !== previousFocus) {
                     try { previousFocus.focus(); } catch { /* disposed focus target */ }
                 }
+                // If the user's panel is still open (or was opened during
+                // preparation), remove Auto from that visible list too.
+                queueAutoMenuSweep(candidate);
             }
         };
         try {
@@ -859,6 +921,14 @@
     for (const name of ['pointerdown', 'click', 'keydown']) {
         document.addEventListener(name, yieldToUser, true);
     }
+    // Bubble phase: YouTube toggles the Settings panel after our capture
+    // listener, so queue the Auto-removal sweep once that click has completed.
+    document.addEventListener('click', event => {
+        if (!event.isTrusted) return;
+        const owner = event.target.closest?.(PLAYER_SELECTOR);
+        const settings = event.target.closest?.('.ytp-settings-menu, .ytp-settings-button');
+        if (owner && settings) { watchAutoMenu(owner); queueAutoMenuSweep(owner); }
+    }, false);
     document.addEventListener('yt-navigate-start', startNavigation);
     document.addEventListener('yt-navigate-finish', () => {
         endNavigation();
@@ -886,10 +956,10 @@
     window.addEventListener('pageshow', () => { suspended = false; endNavigation(); refresh(); });
     window.addEventListener('pagehide', () => {
         suspended = true; cancelTimer(); cancelVerify(); endNavigation();
-        session?.menu?.restore?.(); bindPlayer(null);
+        session?.menu?.restore?.(); bindPlayer(null); stopAutoMenuWatch();
     });
     window[INSTANCE] = Object.freeze({
-        version: '2.5.1',
+        version: '2.6.0',
         // Read-only troubleshooting snapshot; never exposes GM storage or controls.
         get state() { return session ? { id: session.id, phase: session.phase,
             probes: session.probes, nativeAttempts: session.nativeAttempts || 0,
