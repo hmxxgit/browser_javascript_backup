@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.56
+// @version      1.4.57
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -1038,10 +1038,148 @@
     `;
     document.documentElement.appendChild(modernMessageStyle);
 
+    /*
+     * 新版 ChatGPT 会给每轮消息和整个虚拟列表写入缓存高度。自定义字体、
+     * 行距或正文宽度改变实际排版后，提交下一问的瞬间，上一轮的缓存高度
+     * 偶尔仍是旧值，后续问题便会覆盖旧回复；刷新页面会因重新测量而恢复。
+     *
+     * 永久用 CSS 覆盖这些高度会破坏原生虚拟列表和滚动定位。这里只在“已有
+     * 下一轮且上一轮内容确实高于缓存”时加临时 min-height；原生缓存追上后
+     * 立即撤销，让 ChatGPT 继续拥有正常的虚拟化与滚动行为。
+     */
+    const HISTORY_GUARD_ATTRIBUTE = "data-tm-chatgpt-history-height-guard";
+    const HISTORY_GUARD_HEIGHT = "--tm-chatgpt-history-min-height";
+    const HISTORY_GUARD_TOLERANCE = 2;
+    let historyGuardScheduled = false;
+    let historyGuardTimers = [];
+    const historyGuardObservers = new WeakMap();
+
+    const historyGuardStyle = document.createElement("style");
+    historyGuardStyle.setAttribute("data-tm-chatgpt-history-guard-css", "true");
+    historyGuardStyle.textContent = `
+        [${HISTORY_GUARD_ATTRIBUTE}="true"] {
+            min-height: var(${HISTORY_GUARD_HEIGHT}) !important;
+        }
+    `;
+    document.documentElement.appendChild(historyGuardStyle);
+
+    function getInlinePixelHeight(element) {
+        const match = element?.style?.height?.match(/^([0-9]+(?:\.[0-9]+)?)px$/);
+        return match ? Number(match[1]) : null;
+    }
+
+    function clearHistoryHeightGuard(element) {
+        if (!element) return;
+        historyGuardObservers.get(element)?.disconnect();
+        historyGuardObservers.delete(element);
+        element.removeAttribute(HISTORY_GUARD_ATTRIBUTE);
+        element.style.removeProperty(HISTORY_GUARD_HEIGHT);
+    }
+
+    function setHistoryHeightGuard(element, height) {
+        const guardedHeight = `${Math.ceil(height)}px`;
+        if (element.style.getPropertyValue(HISTORY_GUARD_HEIGHT) !== guardedHeight) {
+            element.style.setProperty(HISTORY_GUARD_HEIGHT, guardedHeight);
+        }
+        if (element.getAttribute(HISTORY_GUARD_ATTRIBUTE) !== "true") {
+            element.setAttribute(HISTORY_GUARD_ATTRIBUTE, "true");
+        }
+
+        if (!historyGuardObservers.has(element)) {
+            const observer = new MutationObserver(scheduleHistoryHeightGuard);
+            observer.observe(element, { attributes: true, attributeFilter: ["style"] });
+            historyGuardObservers.set(element, observer);
+        }
+    }
+
+    function reconcileHistoryHeightGuards() {
+        const conversation = document.querySelector(
+            'main [data-chatgpt-conversation-selection-target="true"]'
+        );
+        const turns = conversation
+            ? Array.from(conversation.querySelectorAll("[data-turn-key]"))
+            : [];
+
+        const activeGuards = document.querySelectorAll(
+            `[${HISTORY_GUARD_ATTRIBUTE}="true"]`
+        );
+        activeGuards.forEach(element => {
+            if (!conversation?.contains(element)) clearHistoryHeightGuard(element);
+        });
+
+        if (turns.length < 2) {
+            activeGuards.forEach(clearHistoryHeightGuard);
+            return;
+        }
+
+        let guardedTurn = false;
+        for (const turn of turns.slice(0, -1)) {
+            const cache = turn.parentElement;
+            if (!cache || cache.children.length !== 1 || cache.firstElementChild !== turn) {
+                if (cache?.hasAttribute(HISTORY_GUARD_ATTRIBUTE)) {
+                    clearHistoryHeightGuard(cache);
+                }
+                continue;
+            }
+
+            const cachedHeight = getInlinePixelHeight(cache);
+            const contentHeight = turn.getBoundingClientRect().height;
+            if (cachedHeight === null || contentHeight <= 0) {
+                clearHistoryHeightGuard(cache);
+                continue;
+            }
+
+            if (cachedHeight + HISTORY_GUARD_TOLERANCE < contentHeight) {
+                setHistoryHeightGuard(cache, contentHeight);
+                guardedTurn = true;
+            }
+            else {
+                clearHistoryHeightGuard(cache);
+            }
+        }
+
+        const turnColumn = turns[0].parentElement?.parentElement;
+        const totalCache = turnColumn?.parentElement;
+        if (!guardedTurn) {
+            if (totalCache?.hasAttribute(HISTORY_GUARD_ATTRIBUTE)) {
+                clearHistoryHeightGuard(totalCache);
+            }
+            return;
+        }
+
+        const totalCachedHeight = getInlinePixelHeight(totalCache);
+        if (!turnColumn || totalCachedHeight === null) return;
+
+        const contentHeight = Math.max(
+            turnColumn.getBoundingClientRect().height,
+            turnColumn.scrollHeight
+        );
+        if (totalCachedHeight + HISTORY_GUARD_TOLERANCE < contentHeight) {
+            setHistoryHeightGuard(totalCache, contentHeight);
+        }
+        else {
+            clearHistoryHeightGuard(totalCache);
+        }
+    }
+
+    function scheduleHistoryHeightGuard() {
+        if (historyGuardScheduled) return;
+        historyGuardScheduled = true;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            historyGuardScheduled = false;
+            reconcileHistoryHeightGuards();
+        }));
+
+        historyGuardTimers.forEach(clearTimeout);
+        historyGuardTimers = [250, 1000, 2500].map(delay =>
+            setTimeout(reconcileHistoryHeightGuards, delay)
+        );
+    }
+
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.56
+     * ChatGPT Custom UI v1.4.57
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -1119,6 +1257,21 @@
     function onSharedMutation(handler) {
         sharedMutationHandlers.push(handler);
     }
+
+    onSharedMutation(mutationRecords => {
+        const turnAdded = mutationRecords.some(record =>
+            Array.from(record.addedNodes || []).some(node =>
+                node.nodeType === Node.ELEMENT_NODE && (
+                    node.matches?.("[data-turn-key]") ||
+                    node.querySelector?.("[data-turn-key]")
+                )
+            )
+        );
+
+        if (turnAdded) scheduleHistoryHeightGuard();
+    });
+
+    document.addEventListener("submit", scheduleHistoryHeightGuard, true);
 
     const sharedRouteChangeHandlers = [];
 

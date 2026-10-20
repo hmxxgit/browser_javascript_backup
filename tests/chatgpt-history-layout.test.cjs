@@ -129,6 +129,75 @@ test('native virtualizer owns cached heights even while mounted content is large
     } finally { await browser.close(); }
 });
 
+test('a newly submitted turn temporarily protects a previous reply from stale cached heights', async () => {
+    const browser = await launchBrowser();
+    try {
+        const page = await fixture(browser);
+        await page.evaluate(() => {
+            const firstCache = document.querySelector('#first-cache');
+            const totalCache = document.querySelector('#total-cache');
+            const turnColumn = totalCache.firstElementChild;
+
+            // Reproduce ChatGPT committing a new question while the previous
+            // custom-font reply still has an obsolete 60px cached height.
+            firstCache.style.height = '60px';
+            totalCache.style.height = '1860px';
+            turnColumn.insertAdjacentHTML('beforeend', `
+                <div id="third-cache" style="height:60px">
+                    <div data-turn-key="third">Third question</div>
+                </div>
+            `);
+        });
+
+        await page.waitForFunction(() =>
+            document.querySelector('#first-cache')
+                .hasAttribute('data-tm-chatgpt-history-height-guard')
+        );
+
+        const firstAnswer = await page.locator('#first-answer').boundingBox();
+        const nextTurn = await page.locator('#last-cache').boundingBox();
+        assert.ok(
+            nextTurn.y >= firstAnswer.y + firstAnswer.height - 1,
+            'the next question must follow rather than cover the previous reply'
+        );
+        assert.equal(await page.locator('#first-answer').isVisible(), true);
+
+        // Once the native virtualizer publishes correct measurements, the
+        // temporary overrides disappear instead of permanently owning layout.
+        await page.evaluate(() => {
+            const firstCache = document.querySelector('#first-cache');
+            const firstTurn = firstCache.firstElementChild;
+            const totalCache = document.querySelector('#total-cache');
+            firstCache.style.height = `${Math.ceil(firstTurn.getBoundingClientRect().height)}px`;
+            totalCache.style.height = `${Math.ceil(totalCache.firstElementChild.scrollHeight)}px`;
+        });
+        await page.waitForFunction(() =>
+            !document.querySelector('#first-cache')
+                .hasAttribute('data-tm-chatgpt-history-height-guard')
+        );
+        assert.equal(
+            await page.locator('#total-cache').getAttribute('data-tm-chatgpt-history-height-guard'),
+            null
+        );
+    } finally { await browser.close(); }
+});
+
+test('streaming the latest reply does not override native virtualizer heights', async () => {
+    const browser = await launchBrowser();
+    try {
+        const page = await fixture(browser);
+        await page.evaluate(() => {
+            document.querySelector('#last-cache').style.height = '60px';
+            document.querySelector('#stream').append(' growing latest reply');
+        });
+        await page.waitForTimeout(300);
+        assert.equal(
+            await page.locator('#last-cache').getAttribute('data-tm-chatgpt-history-height-guard'),
+            null
+        );
+    } finally { await browser.close(); }
+});
+
 test('legacy scroll compensation yields to wheel, changing content height, and navigation', async () => {
     const browser = await launchBrowser();
     try {
