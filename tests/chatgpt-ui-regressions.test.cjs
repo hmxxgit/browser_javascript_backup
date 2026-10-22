@@ -5,7 +5,7 @@ const { launchBrowser } = require('./browser.cjs');
 
 const script = path.join(__dirname, '..', 'chatgpt-custom-ui.user.js');
 
-async function createPage(browser) {
+async function createPage(browser, url = 'https://chatgpt.com/c/regression') {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.route('https://chatgpt.com/**', route => route.fulfill({
         contentType: 'text/html',
@@ -16,7 +16,7 @@ async function createPage(browser) {
                 main { margin-left: 220px; min-height: 800px; }
                 .thread-scroll-container { height: 600px; overflow-y: auto; }
                 #content { height: 2400px; }
-                #dock { position: fixed; left: 220px; right: 0; bottom: 0; height: 100px; }
+                #dock { position: fixed; left: 220px; right: 0; bottom: 0; height: 100px; background: linear-gradient(transparent, black); box-shadow: 0 -20px 30px black; }
                 form { width: 700px; height: 80px; }
                 #scroll-button { position: fixed; right: 40px; bottom: 120px; width: 40px; height: 40px; }
                 #portal { position: fixed; left: 300px; top: 120px; z-index: 20; }
@@ -34,11 +34,45 @@ async function createPage(browser) {
             <div id="portal" role="menu"><button id="menu-item">Model option</button></div>
         `
     }));
-    await page.goto('https://chatgpt.com/c/regression');
+    await page.goto(url);
     await page.addScriptTag({ path: script });
     await page.waitForFunction(() => document.querySelector('form').dataset.tmChatgptComposer === 'true');
     return page;
 }
+
+test('starting a new conversation hides the composer and clears its footer shadow', async () => {
+    const browser = await launchBrowser();
+    try {
+        const page = await createPage(browser, 'https://chatgpt.com/');
+
+        await page.mouse.move(640, 795);
+        await page.waitForFunction(() => document.body.classList.contains('tm-chatgpt-composer-visible'));
+
+        await page.evaluate(() => history.pushState({}, '', '/c/first-turn'));
+        await page.waitForFunction(() => !document.body.classList.contains('tm-chatgpt-composer-visible'));
+        await page.waitForFunction(() => getComputedStyle(document.querySelector('form')).visibility === 'hidden');
+
+        const state = await page.evaluate(() => {
+            const form = document.querySelector('form');
+            const dockStyle = getComputedStyle(document.querySelector('#dock'));
+            return {
+                formVisibility: getComputedStyle(form).visibility,
+                formInert: form.inert,
+                dockBackgroundImage: dockStyle.backgroundImage,
+                dockBoxShadow: dockStyle.boxShadow
+            };
+        });
+
+        assert.deepEqual(state, {
+            formVisibility: 'hidden',
+            formInert: true,
+            dockBackgroundImage: 'none',
+            dockBoxShadow: 'none'
+        });
+    } finally {
+        await browser.close();
+    }
+});
 
 test('composer keeps portal and dock interactions, suppresses immediate reveal, and is unfocusable while hidden', async () => {
     const browser = await launchBrowser();

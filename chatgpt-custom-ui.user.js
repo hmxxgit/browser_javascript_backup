@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.57
+// @version      1.4.58
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -1179,7 +1179,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.57
+     * ChatGPT Custom UI v1.4.58
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -1464,6 +1464,8 @@
 
     let lastRoute = getSharedRouteKey();
 
+    let lastPageWasConversation = isConversationPage();
+
     let composerRevealSuppressed = false;
 
     let lastScrollerUpgradeProbeAt = 0;
@@ -1511,6 +1513,40 @@
     function shouldAutoHideComposer() {
 
         return isConversationPage();
+    }
+
+
+    /*
+     * 新对话首次发送后，ChatGPT 会从首页切到 /c/{id}。
+     * 此时鼠标通常仍停在页面底部；如果沿用普通的鼠标位置刷新，
+     * composer 会继续显示，它的原生 footer 阴影也会盖住首轮回复末尾。
+     *
+     * 进入首个具体会话时直接切到阅读状态，并禁止旧鼠标位置重新 reveal。
+     * 新 composer 随后挂载时，refreshComposer 会继承 body 上的隐藏状态。
+     */
+    function handleComposerRouteChange(route) {
+
+        const isConversation =
+            isConversationPage();
+
+        const startedNewConversation =
+            !lastPageWasConversation
+            && isConversation;
+
+
+        lastRoute = route;
+        lastPageWasConversation = isConversation;
+
+
+        if (startedNewConversation) {
+
+            hideComposer(false, true);
+
+            return;
+        }
+
+
+        updatePageState();
     }
 
 
@@ -4085,15 +4121,13 @@
                     const nextRoute = getSharedRouteKey();
 
                     if (nextRoute !== lastRoute) {
-
-                        lastRoute = nextRoute;
-
-
                         routeChanged =
                             true;
 
 
-                        updatePageState();
+                        handleComposerRouteChange(
+                            nextRoute
+                        );
                     }
 
 
@@ -4232,7 +4266,7 @@
 
     onSharedRouteChange(
         route => {
-            lastRoute = route;
+            handleComposerRouteChange(route);
 
 
             requestAnimationFrame(
