@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.60
+// @version      1.4.61
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -1179,7 +1179,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.60
+     * ChatGPT Custom UI v1.4.61
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -2627,9 +2627,74 @@
          * 才标记会让短首轮回复漏过清理规则。
          */
         const nativeThreadScroller =
-            document.querySelector(
-                ".thread-scroll-container"
-            );
+            Array
+                .from(
+                    document.querySelectorAll(
+                        ".thread-scroll-container"
+                    )
+                )
+                .filter(element => {
+                    const rect =
+                        element.getBoundingClientRect();
+
+                    const computed =
+                        getComputedStyle(element);
+
+                    return (
+                        element.isConnected
+                        &&
+                        rect.width > 0
+                        &&
+                        rect.height > 0
+                        &&
+                        computed.display !== "none"
+                        &&
+                        computed.visibility !== "hidden"
+                    );
+                })
+                .sort((left, right) => {
+                    const getPriority = element => {
+                        let priority = 0;
+
+                        if (
+                            element.querySelector(
+                                ':scope > [data-thread-scroll-footer="true"]'
+                            )
+                        ) {
+                            priority += 100;
+                        }
+
+                        if (
+                            element.querySelector(
+                                [
+                                    '[data-message-author-role]',
+                                    '[data-markdown-text-style="assistant-message"]',
+                                    '[data-user-message-bubble="true"]'
+                                ].join(",")
+                            )
+                        ) {
+                            priority += 20;
+                        }
+
+                        if (
+                            element.scrollHeight >
+                            element.clientHeight + 20
+                        ) {
+                            priority += 10;
+                        }
+
+                        const rect =
+                            element.getBoundingClientRect();
+
+                        return priority + Math.min(
+                            rect.width * rect.height / 1000000,
+                            9
+                        );
+                    };
+
+                    return getPriority(right) - getPriority(left);
+                })[0]
+            || null;
 
 
         if (nativeThreadScroller) {

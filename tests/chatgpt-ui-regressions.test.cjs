@@ -5,8 +5,11 @@ const { launchBrowser } = require('./browser.cjs');
 
 const script = path.join(__dirname, '..', 'chatgpt-custom-ui.user.js');
 
-async function createPage(browser, url = 'https://chatgpt.com/c/regression', answerHeight = 2400) {
+async function createPage(browser, url = 'https://chatgpt.com/c/regression', answerHeight = 2400, includeHiddenScroller = false) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    const hiddenScrollerMarkup = includeHiddenScroller
+        ? '<div class="thread-scroll-container" id="hidden-thread-scroller" style="height:0;width:0;overflow:hidden"><div data-thread-scroll-footer="true"><div aria-hidden="true"></div></div></div>'
+        : '';
     await page.route('https://chatgpt.com/**', route => route.fulfill({
         contentType: 'text/html',
         body: `
@@ -27,7 +30,8 @@ async function createPage(browser, url = 'https://chatgpt.com/c/regression', ans
             </style>
             <aside id="sidebar"><div style="height:1600px">Sidebar</div></aside>
             <main>
-                <div class="thread-scroll-container">
+                ${hiddenScrollerMarkup}
+                <div class="thread-scroll-container" id="active-thread-scroller">
                     <div id="content" data-message-author-role="assistant">Answer</div>
                     <div id="thread-footer" data-thread-scroll-footer="true"><div aria-hidden="true"></div></div>
                     <div id="sticky-gradient" class="sticky bottom-0" aria-hidden="true"><div id="thread-gradient" class="bg-gradient-to-t from-surface" aria-hidden="true"></div></div>
@@ -73,6 +77,51 @@ test('clears the native thread footer shadow before the first answer overflows',
             footerIsNativeScrollerChild: true,
             footerBackgroundImage: 'none',
             footerBoxShadow: 'none'
+        });
+    } finally {
+        await browser.close();
+    }
+});
+
+test('marks the visible thread scroller when ChatGPT leaves a zero-sized duplicate first', async () => {
+    const browser = await launchBrowser();
+    try {
+        const page = await createPage(
+            browser,
+            'https://chatgpt.com/c/duplicate-hidden-scroller',
+            120,
+            true
+        );
+
+        const state = await page.evaluate(() => {
+            const hiddenScroller = document.querySelector('#hidden-thread-scroller');
+            const activeScroller = document.querySelector('#active-thread-scroller');
+            const footer = activeScroller.querySelector('[data-thread-scroll-footer="true"]');
+            const decoration = footer.querySelector('[aria-hidden="true"]');
+            const decorationStyle = getComputedStyle(decoration);
+
+            return {
+                hiddenScrollerSize: [
+                    hiddenScroller.getBoundingClientRect().width,
+                    hiddenScroller.getBoundingClientRect().height
+                ],
+                hiddenScrollerMarked: hiddenScroller.dataset.tmChatgptScroller === 'true',
+                activeScrollerMarked: activeScroller.dataset.tmChatgptScroller === 'true',
+                footerIsActiveScrollerChild: footer.parentElement === activeScroller,
+                decorationBackground: decorationStyle.backgroundColor,
+                decorationBackgroundImage: decorationStyle.backgroundImage,
+                decorationBoxShadow: decorationStyle.boxShadow
+            };
+        });
+
+        assert.deepEqual(state, {
+            hiddenScrollerSize: [0, 0],
+            hiddenScrollerMarked: false,
+            activeScrollerMarked: true,
+            footerIsActiveScrollerChild: true,
+            decorationBackground: 'rgba(0, 0, 0, 0)',
+            decorationBackgroundImage: 'none',
+            decorationBoxShadow: 'none'
         });
     } finally {
         await browser.close();
