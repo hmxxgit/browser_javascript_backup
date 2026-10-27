@@ -17,6 +17,9 @@ async function createPage(browser, url = 'https://chatgpt.com/c/regression', ans
                 .thread-scroll-container { height: 600px; overflow-y: auto; }
                 #content { height: ${answerHeight}px; }
                 #thread-footer { position: sticky; bottom: 0; height: 80px; background: linear-gradient(transparent, black); box-shadow: 0 -20px 30px black; }
+                #thread-footer > [aria-hidden="true"] { position: absolute; inset: 0; background: #000; box-shadow: 0 -20px 30px #000; }
+                #sticky-gradient { position: sticky; bottom: 0; height: 80px; }
+                #thread-gradient { position: absolute; inset: 0; background: linear-gradient(transparent, #000); box-shadow: 0 -20px 30px #000; }
                 #dock { position: fixed; left: 220px; right: 0; bottom: 0; height: 100px; background: linear-gradient(transparent, black); box-shadow: 0 -20px 30px black; }
                 form { width: 700px; height: 80px; }
                 #scroll-button { position: fixed; right: 40px; bottom: 120px; width: 40px; height: 40px; }
@@ -27,6 +30,7 @@ async function createPage(browser, url = 'https://chatgpt.com/c/regression', ans
                 <div class="thread-scroll-container">
                     <div id="content" data-message-author-role="assistant">Answer</div>
                     <div id="thread-footer" data-thread-scroll-footer="true"><div aria-hidden="true"></div></div>
+                    <div id="sticky-gradient" class="sticky bottom-0" aria-hidden="true"><div id="thread-gradient" class="bg-gradient-to-t from-surface" aria-hidden="true"></div></div>
                 </div>
                 <div id="dock">
                     <form data-composer-placement="thread" data-chatgpt-composer>
@@ -69,6 +73,48 @@ test('clears the native thread footer shadow before the first answer overflows',
             footerIsNativeScrollerChild: true,
             footerBackgroundImage: 'none',
             footerBoxShadow: 'none'
+        });
+    } finally {
+        await browser.close();
+    }
+});
+
+test('keeps native footer and sticky gradient layers clear while the composer is visible', async () => {
+    const browser = await launchBrowser();
+    try {
+        const page = await createPage(browser, 'https://chatgpt.com/c/short-first-answer', 120);
+
+        await page.evaluate(() => {
+            const form = document.querySelector('form');
+            document.body.classList.add('tm-chatgpt-composer-visible');
+            form.inert = false;
+            form.removeAttribute('inert');
+            form.removeAttribute('aria-hidden');
+        });
+
+        const state = await page.evaluate(() => {
+            const form = document.querySelector('form');
+            const footerDecoration = document.querySelector('#thread-footer > [aria-hidden="true"]');
+            const gradient = document.querySelector('#thread-gradient');
+            const footerStyle = getComputedStyle(footerDecoration);
+            const gradientStyle = getComputedStyle(gradient);
+            return {
+                composerVisibility: getComputedStyle(form).visibility,
+                footerDecorationBackground: footerStyle.backgroundColor,
+                footerDecorationBackgroundImage: footerStyle.backgroundImage,
+                footerDecorationBoxShadow: footerStyle.boxShadow,
+                stickyGradientBackgroundImage: gradientStyle.backgroundImage,
+                stickyGradientBoxShadow: gradientStyle.boxShadow
+            };
+        });
+
+        assert.deepEqual(state, {
+            composerVisibility: 'visible',
+            footerDecorationBackground: 'rgba(0, 0, 0, 0)',
+            footerDecorationBackgroundImage: 'none',
+            footerDecorationBoxShadow: 'none',
+            stickyGradientBackgroundImage: 'none',
+            stickyGradientBoxShadow: 'none'
         });
     } finally {
         await browser.close();

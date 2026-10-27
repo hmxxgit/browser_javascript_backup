@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.59
+// @version      1.4.60
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -1179,7 +1179,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.59
+     * ChatGPT Custom UI v1.4.60
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -1932,27 +1932,21 @@
 
 
         /*
-         * 新版 Footer 不再使用 #thread-bottom-container，而是
-         * data-thread-scroll-footer。黑色底板是 composer 的兄弟节点，
-         * 不在 composer 的祖先清理链中。只清理 Footer 自身及其
-         * 直接 aria-hidden 装饰层（含伪元素），避免影响正文图表。
+         * 新版 Footer 的 aria-hidden 底板是 composer 的兄弟节点，
+         * 不在 composer 的祖先清理链中。ChatGPT 在 composer 显示时
+         * 会恢复这块不透明的 surface；它覆盖短回复末尾，所以无论
+         * composer 状态如何，都只清理 Footer 装饰层，不动输入框本身。
          */
-        body:not(.tm-chatgpt-composer-visible)
         [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"],
 
-        body:not(.tm-chatgpt-composer-visible)
         [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"]::before,
 
-        body:not(.tm-chatgpt-composer-visible)
         [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"]::after,
 
-        body:not(.tm-chatgpt-composer-visible)
         [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"] > [aria-hidden="true"],
 
-        body:not(.tm-chatgpt-composer-visible)
         [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"] > [aria-hidden="true"]::before,
 
-        body:not(.tm-chatgpt-composer-visible)
         [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"] > [aria-hidden="true"]::after {
 
             background: transparent !important;
@@ -1975,10 +1969,9 @@
          *         -> bg-gradient-to-t
          *
          * 这层是 composer dock 的兄弟分支，不在 dock 后代中，
-         * 因而上面的通用清理规则覆盖不到。仅在 composer 隐藏时
-         * 清除这块原生渐变，显示输入框时保留 ChatGPT 默认效果。
+         * 因而上面的通用清理规则覆盖不到。它也是覆盖回复末尾的
+         * 装饰层，因此无论 composer 状态如何都清除背景渐变。
          */
-        body:not(.tm-chatgpt-composer-visible)
         [data-tm-chatgpt-scroller="true"]
         [aria-hidden="true"].sticky.bottom-0
         >
