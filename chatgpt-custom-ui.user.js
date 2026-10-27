@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.58
+// @version      1.4.59
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -1179,7 +1179,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.58
+     * ChatGPT Custom UI v1.4.59
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -1428,9 +1428,9 @@
     let currentScroller = null;
 
     /*
-     * 新版会话页会先挂载 composer，随后才挂载内部的
-     * .thread-scroll-container。初次只能回退到 document 时，
-     * 不能把这个回退结果永久缓存。
+     * 新版会话页可能先挂载 composer，随后才挂载内部的
+     * .thread-scroll-container。初次选择的 document 或普通祖先
+     * 都只是回退节点，不能阻止后续升级到语义滚动根。
      */
     let currentScrollerIsFallback = false;
 
@@ -1467,12 +1467,6 @@
     let lastPageWasConversation = isConversationPage();
 
     let composerRevealSuppressed = false;
-
-    let lastScrollerUpgradeProbeAt = 0;
-
-    const SCROLLER_UPGRADE_PROBE_INTERVAL = 500;
-
-
 
     /* =========================================================
        三、页面类型判断
@@ -2635,8 +2629,9 @@
 
         /*
          * 2026-10 新版 ChatGPT 的稳定滚动根。
-         * 它使用 flex-col-reverse，scrollTop 在离开底部后为负值。
-         * 优先使用原生语义类，避免页面初次渲染时误缓存 <html>。
+         * 即使第一条回复还没有撑出滚动范围，也必须选中它：
+         * 原生 Footer 的渐变和阴影位于该节点内，等待内容溢出
+         * 才标记会让短首轮回复漏过清理规则。
          */
         const nativeThreadScroller =
             document.querySelector(
@@ -2644,12 +2639,7 @@
             );
 
 
-        if (
-            nativeThreadScroller
-            &&
-            nativeThreadScroller.scrollHeight >
-                nativeThreadScroller.clientHeight + 20
-        ) {
+        if (nativeThreadScroller) {
 
             document
                 .querySelectorAll(
@@ -2854,7 +2844,7 @@
 
 
         currentScrollerIsFallback =
-            scroller === docScroller;
+            scroller !== nativeThreadScroller;
 
 
         return scroller;
@@ -4173,16 +4163,10 @@
                     const nativeScroller = currentScrollerIsFallback
                         ? document.querySelector(".thread-scroll-container")
                         : null;
-                    const now = performance.now();
                     const scrollerNeedsUpgrade =
                         currentScrollerIsFallback
                         && nativeScroller
-                        && nativeScroller.scrollHeight > nativeScroller.clientHeight + 20
-                        && now - lastScrollerUpgradeProbeAt >= SCROLLER_UPGRADE_PROBE_INTERVAL;
-
-                    if (scrollerNeedsUpgrade) {
-                        lastScrollerUpgradeProbeAt = now;
-                    }
+                        && nativeScroller !== currentScroller;
 
 
                     const structureAlive =

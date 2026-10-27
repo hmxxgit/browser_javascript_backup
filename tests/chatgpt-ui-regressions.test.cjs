@@ -5,7 +5,7 @@ const { launchBrowser } = require('./browser.cjs');
 
 const script = path.join(__dirname, '..', 'chatgpt-custom-ui.user.js');
 
-async function createPage(browser, url = 'https://chatgpt.com/c/regression') {
+async function createPage(browser, url = 'https://chatgpt.com/c/regression', answerHeight = 2400) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.route('https://chatgpt.com/**', route => route.fulfill({
         contentType: 'text/html',
@@ -15,7 +15,8 @@ async function createPage(browser, url = 'https://chatgpt.com/c/regression') {
                 aside { position: fixed; left: 0; top: 0; width: 220px; height: 800px; overflow: auto; }
                 main { margin-left: 220px; min-height: 800px; }
                 .thread-scroll-container { height: 600px; overflow-y: auto; }
-                #content { height: 2400px; }
+                #content { height: ${answerHeight}px; }
+                #thread-footer { position: sticky; bottom: 0; height: 80px; background: linear-gradient(transparent, black); box-shadow: 0 -20px 30px black; }
                 #dock { position: fixed; left: 220px; right: 0; bottom: 0; height: 100px; background: linear-gradient(transparent, black); box-shadow: 0 -20px 30px black; }
                 form { width: 700px; height: 80px; }
                 #scroll-button { position: fixed; right: 40px; bottom: 120px; width: 40px; height: 40px; }
@@ -23,7 +24,10 @@ async function createPage(browser, url = 'https://chatgpt.com/c/regression') {
             </style>
             <aside id="sidebar"><div style="height:1600px">Sidebar</div></aside>
             <main>
-                <div class="thread-scroll-container"><div id="content" data-message-author-role="assistant">Answer</div></div>
+                <div class="thread-scroll-container">
+                    <div id="content" data-message-author-role="assistant">Answer</div>
+                    <div id="thread-footer" data-thread-scroll-footer="true"><div aria-hidden="true"></div></div>
+                </div>
                 <div id="dock">
                     <form data-composer-placement="thread" data-chatgpt-composer>
                         <textarea id="prompt-textarea"></textarea><button>Send</button>
@@ -39,6 +43,37 @@ async function createPage(browser, url = 'https://chatgpt.com/c/regression') {
     await page.waitForFunction(() => document.querySelector('form').dataset.tmChatgptComposer === 'true');
     return page;
 }
+
+test('clears the native thread footer shadow before the first answer overflows', async () => {
+    const browser = await launchBrowser();
+    try {
+        const page = await createPage(browser, 'https://chatgpt.com/c/short-first-answer', 120);
+        await page.waitForFunction(() => document.querySelector('form')?.dataset.tmChatgptComposer === 'true');
+
+        const state = await page.evaluate(() => {
+            const scroller = document.querySelector('.thread-scroll-container');
+            const footer = document.querySelector('[data-thread-scroll-footer="true"]');
+            const footerStyle = getComputedStyle(footer);
+            return {
+                contentFits: scroller.scrollHeight <= scroller.clientHeight + 20,
+                nativeScrollerMarked: scroller.dataset.tmChatgptScroller === 'true',
+                footerIsNativeScrollerChild: footer.parentElement === scroller,
+                footerBackgroundImage: footerStyle.backgroundImage,
+                footerBoxShadow: footerStyle.boxShadow
+            };
+        });
+
+        assert.deepEqual(state, {
+            contentFits: true,
+            nativeScrollerMarked: true,
+            footerIsNativeScrollerChild: true,
+            footerBackgroundImage: 'none',
+            footerBoxShadow: 'none'
+        });
+    } finally {
+        await browser.close();
+    }
+});
 
 test('starting a new conversation hides the composer and clears its footer shadow', async () => {
     const browser = await launchBrowser();
