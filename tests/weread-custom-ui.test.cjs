@@ -4,29 +4,43 @@ const path = require('node:path');
 const { launchBrowser } = require('./browser.cjs');
 
 const script = path.join(__dirname, '..', 'weread-custom-ui.user.js');
-const fixture = `<!doctype html><html><head><style>
-body { margin: 0; background: white; color: #222; }
-.readerContent > .app_content { max-width: 1000px; margin: auto; }
-.readerChapterContent { margin: 0 100px; }
-.readerTopBar { position: fixed; top: 0; }
-.readerControls { position: fixed; width: 48px; }
-.wr_horizontalReader .readerChapterContent_container { display:flex; }
-.wr_horizontalReader .readerChapterContent { position:relative; }
-.wr_horizontalReader .readerControls { position:absolute; }
-.preRenderContent p { font: 18px/1.5 serif; }
-</style></head><body><div class="readerContent"><div class="app_content">
-<div class="readerTopBar"></div><div class="readerChapterContent"><div class="preRenderContent" id="preRenderContents">
-<p><span>阅读测试</span></p></div><div class="readerControls"></div></div></div></div></body></html>`;
+// Simplified fixture with placeholder text, following the hierarchy observed on the live site.
+// It checks our CSS and controls; it does not emulate WeRead's canvas/layout engine.
+function fixture(mode) {
+    const horizontal = mode === 'horizontal';
+    const preId = horizontal ? 'preRenderContent' : 'preRenderContents';
+    const controls = '<div class="readerControls"><button>目录</button></div>';
+    const chapter = `<div class="readerChapterContent"><div class="preRenderContainer"><div class="preRenderContent" id="${preId}">
+        <div><h2 class="secondTitle"><span>标题</span></h2><p class="content"><span>正文</span><sup style="font-size:60%">1</sup></p></div>
+        </div></div><div class="renderTargetContainer"><div class="wr_canvasContainer"><canvas></canvas><canvas></canvas></div>
+        <div class="renderTargetContent" id="renderTargetContent"><div class="passage-wrapper"><div class="passage-content"><span data-wr-role="text">字</span></div></div></div></div>
+        ${horizontal ? controls : ''}</div>`;
+    const reader = horizontal
+        ? `<div class="wr_horizontalReader"><div class="wr_horizontalReader_app_content"><div class="readerTopBar"></div><div class="wr_various_font_provider_wrapper"><div class="readerChapterContent_container">${chapter}</div></div></div></div>`
+        : `<div class="readerContent"><div class="app_content"><div class="readerTopBar"></div><div class="wr_various_font_provider_wrapper">${chapter}</div></div>${controls}</div>`;
+    return `<!doctype html><html><head><style>
+        body { margin: 0; background: white; color: #222; }
+        .readerContent > .app_content { max-width: 1000px; margin: auto; }
+        .readerChapterContent { margin: 0 100px; }
+        .readerTopBar { position: fixed; top: 0; }
+        .readerControls { position: fixed; width: 48px; }
+        .wr_horizontalReader .readerChapterContent_container { display: flex; }
+        .wr_horizontalReader .readerChapterContent { position: relative; }
+        .wr_horizontalReader .readerControls { position: absolute; }
+        .preRenderContent p { font: 18px/1.5 serif; }
+    </style></head><body><div id="routerView">${reader}</div>
+    <div class="preRenderContent" id="unrelated"><p>其他区域</p></div></body></html>`;
+}
 let browser;
 before(async () => { browser = await launchBrowser(); });
 after(async () => { await browser?.close(); });
 
-async function setup(saved, viewport = { width: 1440, height: 900 }) {
+async function setup(saved, viewport = { width: 1440, height: 900 }, mode = 'scroll') {
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await page.route('https://weread.qq.com/web/reader/**', route => route.fulfill({ contentType: 'text/html', body: fixture }));
+    await page.route('https://weread.qq.com/web/reader/**', route => route.fulfill({ contentType: 'text/html', body: fixture(mode) }));
     await page.addInitScript(initial => {
         if (!sessionStorage.getItem('initialized')) {
             sessionStorage.setItem('initialized', '1');
@@ -72,6 +86,8 @@ test('saved settings affect the input to the reading engine and survive a reload
         assert.equal(await style(page, '.preRenderContent p span', 'fontSize'), '26px');
         assert.equal(await style(page, '.preRenderContent p span', 'lineHeight'), '62.4px');
         assert.equal(await style(page, '.preRenderContent p span', 'color'), 'rgb(86, 67, 34)');
+        assert.equal(await style(page, '#preRenderContents sup', 'fontSize'), '15.6px');
+        assert.equal(await style(page, '#unrelated p', 'fontSize'), '18px');
         assert.equal(await style(page, '.readerChapterContent', 'backgroundColor'), 'rgb(246, 236, 215)');
         assert.ok(Math.abs((await page.locator('.readerChapterContent').boundingBox()).width - 1200) <= 1);
         await page.reload();
@@ -110,7 +126,7 @@ test('invalid colors do not save, and disabling restores the original page style
     } finally { await context.close(); }
 });
 
-test('malformed saved values are bounded; narrow and double-column layouts remain usable', async () => {
+test('malformed saved values are bounded and the panel fits narrow windows', async () => {
     const { page, context, errors } = await setup({ width: 90000, fontSize: 0, lineHeight: 9, background: 'red;display:none', customColors: true }, { width: 390, height: 844 });
     try {
         assert.equal(await style(page, '.preRenderContent p', 'fontSize'), '14px');
@@ -119,13 +135,23 @@ test('malformed saved values are bounded; narrow and double-column layouts remai
         await ui(page).getByRole('button', { name: '阅读设置' }).click();
         const panel = await ui(page).getByRole('dialog').boundingBox();
         assert.ok(panel.x >= 0 && panel.x + panel.width <= 390);
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await page.evaluate(() => {
-            const root = document.querySelector('.readerContent');
-            root.className = 'wr_horizontalReader';
-            root.firstElementChild.className = 'wr_horizontalReader_app_content';
-        });
-        assert.equal(await style(page, '.readerControls', 'right'), '-60px');
+        assert.deepEqual(errors, []);
+    } finally { await context.close(); }
+});
+
+test('the observed double-column hierarchy keeps the toolbar outside the chapter', async () => {
+    const { page, context, errors } = await setup({ width: 1100, fontSize: 26, lineHeight: 2.4 }, { width: 1440, height: 900 }, 'horizontal');
+    try {
+        assert.equal(await style(page, '#preRenderContent p span', 'fontSize'), '26px');
+        assert.equal(await style(page, '#preRenderContent p', 'lineHeight'), '62.4px');
+        const chapter = await page.locator('.readerChapterContent').boundingBox();
+        const controls = await page.locator('.readerControls').boundingBox();
+        assert.ok(Math.abs(chapter.width - 1100) <= 1);
+        assert.ok(controls.x >= chapter.x + chapter.width);
+        assert.ok(controls.x + controls.width <= 1440);
+        await page.setViewportSize({ width: 390, height: 844 });
+        const narrowControls = await page.locator('.readerControls').boundingBox();
+        assert.ok(narrowControls.x >= 0 && narrowControls.x + narrowControls.width <= 390);
         assert.deepEqual(errors, []);
     } finally { await context.close(); }
 });

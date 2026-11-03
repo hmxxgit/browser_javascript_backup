@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微信读书阅读样式
 // @namespace    https://github.com/hmxxgit/browser_javascript_backup
-// @version      1.0.0
+// @version      1.0.1
 // @description  自定义微信读书网页版的正文宽度、字号、行距与颜色。
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -58,9 +58,10 @@
     try { config = normalize(GM_getValue(STORAGE_KEY, null)); }
     catch (_) { config = normalize(null); }
 
-    // 微信读书先排版隐藏的 preRenderContent，再将结果绘制成文字层和 canvas。
-    // 对最终文字层设置 line-height 不会改变行距；必须在首次排版前设置输入样式。
-    // 容器选择器参考 EwenYoung/weread-plus 和 ForestSun2023/weread-bg-theme。
+    // 实测滚动模式为 #preRenderContents，双栏为 #preRenderContent；两者都属于
+    // .readerChapterContent .preRenderContent，且在排版完成后生成文字层与 canvas。
+    // 样式必须先应用到预排版容器和正文块；不要覆盖段内 span，以保留书籍自身格式。
+    // 纵向工具栏是 .readerContent 的直接子项，双栏工具栏则位于 .readerChapterContent 内。
     function buildReaderCss(settings) {
         if (!settings.enabled) return '';
         const width = settings.width;
@@ -83,14 +84,15 @@
                 width: calc(100% - 144px) !important;
                 max-width: ${width + 80}px !important;
             }
-            .readerControls {
+            .readerContent > .readerControls,
+            .wr_horizontalReader .readerChapterContent > .readerControls {
                 left: auto !important;
                 right: 12px !important;
                 margin-left: 0 !important;
             }
-            .wr_horizontalReader .readerControls { right: -60px !important; }
-            .preRenderContent,
-            .preRenderContent :is(p, p *, li, li *, blockquote) {
+            .wr_horizontalReader .readerChapterContent > .readerControls { right: -60px !important; }
+            .readerChapterContent .preRenderContent,
+            .readerChapterContent .preRenderContent :is(p, li, blockquote) {
                 font-size: ${settings.fontSize}px !important;
                 line-height: ${settings.lineHeight} !important;
             }
@@ -104,7 +106,7 @@
                 .wr_horizontalReader .readerChapterContent {
                     width: calc(100% - 40px) !important;
                 }
-                .wr_horizontalReader .readerControls { right: 4px !important; }
+                .wr_horizontalReader .readerChapterContent > .readerControls { right: 4px !important; }
             }
         `;
         if (settings.customColors) {
@@ -119,7 +121,8 @@
                     background-color: ${settings.background} !important;
                     background-image: none !important;
                 }
-                .preRenderContent, .preRenderContent *,
+                .readerChapterContent .preRenderContent,
+                .readerChapterContent .preRenderContent *,
                 .readerChapterContent [data-wr-role="text"],
                 .readerTopBar_title_link, .readerTopBar_title_chapter, .readerTopBar_link,
                 .renderTargetPageInfo_header, .renderTargetPageInfo_header *,

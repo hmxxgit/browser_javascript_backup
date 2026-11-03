@@ -60,6 +60,7 @@
 | [ChatGPT 维护说明](docs/chatgpt-custom-ui.md) | 模块边界、性能约束、回归与发布流程 |
 | [X 脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/x-custom-ui.user.js) | 查看完整源码、默认配置与版本 |
 | [微信读书脚本](https://github.com/hmxxgit/browser_javascript_backup/blob/main/weread-custom-ui.user.js) | 自定义阅读样式与设置面板 |
+| [微信读书 DOM 与验证记录](docs/weread-custom-ui.md) | 实测页面层级、选择器依据与验证范围 |
 | [依赖与测试命令](https://github.com/hmxxgit/browser_javascript_backup/blob/main/package.json) | 安装开发依赖、运行全部测试 |
 | [ChatGPT 代码块测试](https://github.com/hmxxgit/browser_javascript_backup/blob/main/tests/chatgpt-code-layout.test.cjs) | 换行按钮、横向滚动、源码保留 |
 | [ChatGPT 图表测试](https://github.com/hmxxgit/browser_javascript_backup/blob/main/tests/chatgpt-diagram-layout.test.cjs) | 屏幕适配、动态更新、媒体范围 |
