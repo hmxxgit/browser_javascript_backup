@@ -5,11 +5,12 @@ const { launchBrowser } = require('./browser.cjs');
 
 const script = path.join(__dirname, '..', 'chatgpt-custom-ui.user.js');
 
-async function createPage(browser, url = 'https://chatgpt.com/c/regression', answerHeight = 2400, includeHiddenScroller = false) {
+async function createPage(browser, url = 'https://chatgpt.com/c/regression', answerHeight = 2400, includeHiddenScroller = false, wrapFooter = false) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     const hiddenScrollerMarkup = includeHiddenScroller
         ? '<div class="thread-scroll-container" id="hidden-thread-scroller" style="height:0;width:0;overflow:hidden"><div data-thread-scroll-footer="true"><div aria-hidden="true"></div></div></div>'
         : '';
+    const footerMarkup = '<div id="thread-footer" data-thread-scroll-footer="true"><div aria-hidden="true"></div></div>';
     await page.route('https://chatgpt.com/**', route => route.fulfill({
         contentType: 'text/html',
         body: `
@@ -33,7 +34,7 @@ async function createPage(browser, url = 'https://chatgpt.com/c/regression', ans
                 ${hiddenScrollerMarkup}
                 <div class="thread-scroll-container" id="active-thread-scroller">
                     <div id="content" data-message-author-role="assistant">Answer</div>
-                    <div id="thread-footer" data-thread-scroll-footer="true"><div aria-hidden="true"></div></div>
+                    ${wrapFooter ? `<div id="footer-wrapper">${footerMarkup}</div>` : footerMarkup}
                     <div id="sticky-gradient" class="sticky bottom-0" aria-hidden="true"><div id="thread-gradient" class="bg-gradient-to-t from-surface" aria-hidden="true"></div></div>
                 </div>
                 <div id="dock">
@@ -122,6 +123,46 @@ test('marks the visible thread scroller when ChatGPT leaves a zero-sized duplica
             decorationBackground: 'rgba(0, 0, 0, 0)',
             decorationBackgroundImage: 'none',
             decorationBoxShadow: 'none'
+        });
+    } finally {
+        await browser.close();
+    }
+});
+
+test('clears a wrapped thread footer without changing message graphics', async () => {
+    const browser = await launchBrowser();
+    try {
+        const page = await createPage(browser, 'https://chatgpt.com/c/wrapped-footer', 120, true, true);
+
+        const state = await page.evaluate(() => {
+            const scroller = document.querySelector('#active-thread-scroller');
+            const footer = scroller.querySelector('[data-thread-scroll-footer="true"]');
+            const decoration = footer.querySelector('[aria-hidden="true"]');
+            const graphic = document.createElement('div');
+            graphic.setAttribute('aria-hidden', 'true');
+            graphic.style.backgroundColor = 'rgb(30, 140, 220)';
+            document.querySelector('#content').appendChild(graphic);
+
+            const hiddenBackground = getComputedStyle(decoration).backgroundColor;
+            document.body.classList.add('tm-chatgpt-composer-visible');
+
+            return {
+                scrollerMarked: scroller.dataset.tmChatgptScroller === 'true',
+                footerWrapped: footer.parentElement.id === 'footer-wrapper',
+                hiddenBackground,
+                visibleBackground: getComputedStyle(decoration).backgroundColor,
+                decorationShadow: getComputedStyle(decoration).boxShadow,
+                graphicBackground: getComputedStyle(graphic).backgroundColor
+            };
+        });
+
+        assert.deepEqual(state, {
+            scrollerMarked: true,
+            footerWrapped: true,
+            hiddenBackground: 'rgba(0, 0, 0, 0)',
+            visibleBackground: 'rgba(0, 0, 0, 0)',
+            decorationShadow: 'none',
+            graphicBackground: 'rgb(30, 140, 220)'
         });
     } finally {
         await browser.close();

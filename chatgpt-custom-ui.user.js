@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.61
+// @version      1.4.62
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -1179,7 +1179,7 @@
 
     /*
      * =========================================================
-     * ChatGPT Custom UI v1.4.61
+     * ChatGPT Custom UI v1.4.62
      *
      * 模块 1：输入框自动隐藏 + 首页常显 + 控件保护 + 删除免责声明
      * 模块 2：跳到底部箭头智能显示
@@ -1934,20 +1934,21 @@
         /*
          * 新版 Footer 的 aria-hidden 底板是 composer 的兄弟节点，
          * 不在 composer 的祖先清理链中。ChatGPT 在 composer 显示时
-         * 会恢复这块不透明的 surface；它覆盖短回复末尾，所以无论
-         * composer 状态如何，都只清理 Footer 装饰层，不动输入框本身。
+         * 会恢复这块不透明的 surface；它覆盖回复末尾。Footer 可能
+         * 经过包装节点嵌套在滚动容器内，因此使用后代关系定位 Footer，
+         * 仍只清理其直接装饰子节点，不动输入框本身。
          */
-        [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"],
+        [data-tm-chatgpt-scroller="true"] [data-thread-scroll-footer="true"],
 
-        [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"]::before,
+        [data-tm-chatgpt-scroller="true"] [data-thread-scroll-footer="true"]::before,
 
-        [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"]::after,
+        [data-tm-chatgpt-scroller="true"] [data-thread-scroll-footer="true"]::after,
 
-        [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"] > [aria-hidden="true"],
+        [data-tm-chatgpt-scroller="true"] [data-thread-scroll-footer="true"] > [aria-hidden="true"],
 
-        [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"] > [aria-hidden="true"]::before,
+        [data-tm-chatgpt-scroller="true"] [data-thread-scroll-footer="true"] > [aria-hidden="true"]::before,
 
-        [data-tm-chatgpt-scroller="true"] > [data-thread-scroll-footer="true"] > [aria-hidden="true"]::after {
+        [data-tm-chatgpt-scroller="true"] [data-thread-scroll-footer="true"] > [aria-hidden="true"]::after {
 
             background: transparent !important;
             box-shadow: none !important;
@@ -2657,8 +2658,12 @@
                         let priority = 0;
 
                         if (
-                            element.querySelector(
-                                ':scope > [data-thread-scroll-footer="true"]'
+                            Array.from(
+                                element.querySelectorAll(
+                                    '[data-thread-scroll-footer="true"]'
+                                )
+                            ).some(footer =>
+                                footer.closest('.thread-scroll-container') === element
                             )
                         ) {
                             priority += 100;
