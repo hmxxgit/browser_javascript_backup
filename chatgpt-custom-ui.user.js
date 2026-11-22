@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.63
+// @version      1.4.64
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -956,6 +956,25 @@
     const modernMessageStyle = document.createElement("style");
     modernMessageStyle.setAttribute("data-tm-chatgpt-modern-message-css", "true");
     modernMessageStyle.textContent = `
+        /* 自动列宽表格使用正文的可用宽度，而不是原生的 768px 限制。
+         * 还原 DIL 视口两侧的外扩留白，保留其横向滚动能力。 */
+        main [data-dil-response] [data-d-component="table"]:has(> [data-d-table-viewport] > table[data-d-column-sizing="auto"]) {
+            margin-inline: 0 !important;
+            min-width: 0 !important;
+        }
+        main [data-dil-response] [data-d-component="table"] > [data-d-table-viewport]:has(> table[data-d-column-sizing="auto"]) {
+            padding-inline: 0 !important;
+        }
+        main [data-dil-response] [data-d-table-viewport] > table[data-d-column-sizing="auto"] {
+            width: 100% !important;
+        }
+        /* 使用内容盒保证两个汉字的宽度不被单元格内边距占掉。 */
+        main [data-dil-response] [data-d-table-viewport] > table[data-d-column-sizing="auto"] :is(th, td) {
+            box-sizing: content-box !important;
+            min-width: 2em !important;
+            overflow-wrap: anywhere !important;
+        }
+
         /* DIL 单选和多选的 label 有独立字号，不能只靠正文继承。 */
         main [data-dil-response] [data-d-component="radio"] > label,
         main [data-dil-response] [data-d-component="checkbox"] + label {
