@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Custom UI
 // @namespace    https://gist.github.com/hmxxgit
-// @version      1.4.62
+// @version      1.4.63
 // @description  ChatGPT 自定义界面：输入框自动隐藏、底部箭头智能显示、鼠标自动隐藏等
 // @author       hmxxgit
 // @homepageURL  https://github.com/hmxxgit/browser_javascript_backup
@@ -38,6 +38,7 @@
         /* 字体大小 */
         messageFontSize: 19,
         messageLineHeight: 1.5,
+        quizOptionFontSize: 19,
         inputFontSize: 19,
         codeFontSize: 15,
         h1Size: 33,
@@ -90,6 +91,7 @@
         userBubbleMaxWidth: { min: 20, max: 100 },
         messageFontSize: { min: 8, max: 96 },
         messageLineHeight: { min: 0.8, max: 4 },
+        quizOptionFontSize: { min: 8, max: 96 },
         inputFontSize: { min: 8, max: 96 },
         codeFontSize: { min: 8, max: 96 },
         h1Size: { min: 8, max: 160 },
@@ -633,6 +635,7 @@
                 fields: [
                     ["messageFontSize", "回复正文字体", "px"],
                     ["messageLineHeight", "回复正文行距", "倍"],
+                    ["quizOptionFontSize", "交互题选项字体", "px"],
                     ["inputFontSize", "输入框字体", "px"],
                     ["codeFontSize", "代码字体", "px"],
                     ["h1Size", "一级标题", "px"],
@@ -821,6 +824,7 @@
         rootStyle.setProperty("--chatgpt-composer-width", `${USER_CONFIG.composerWidth}px`);
         rootStyle.setProperty("--chatgpt-message-font-size", `${USER_CONFIG.messageFontSize}px`);
         rootStyle.setProperty("--chatgpt-message-line-height", String(USER_CONFIG.messageLineHeight));
+        rootStyle.setProperty("--chatgpt-quiz-option-font-size", `${USER_CONFIG.quizOptionFontSize}px`);
         rootStyle.setProperty("--chatgpt-input-font-size", `${USER_CONFIG.inputFontSize}px`);
         rootStyle.setProperty("--chatgpt-code-font-size", `${USER_CONFIG.codeFontSize}px`);
         rootStyle.setProperty("--chatgpt-h1-size", `${USER_CONFIG.h1Size}px`);
@@ -952,6 +956,13 @@
     const modernMessageStyle = document.createElement("style");
     modernMessageStyle.setAttribute("data-tm-chatgpt-modern-message-css", "true");
     modernMessageStyle.textContent = `
+        /* DIL 单选和多选的 label 有独立字号，不能只靠正文继承。 */
+        main [data-dil-response] [data-d-component="radio"] > label,
+        main [data-dil-response] [data-d-component="checkbox"] + label {
+            font-size: var(--chatgpt-quiz-option-font-size) !important;
+            line-height: var(--chatgpt-message-line-height) !important;
+        }
+
         main [data-markdown-text-style="assistant-message"],
         main [data-markdown-text-style="assistant-message"] p,
         main [data-markdown-text-style="assistant-message"] li,
